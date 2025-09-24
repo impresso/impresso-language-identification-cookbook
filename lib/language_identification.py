@@ -202,7 +202,7 @@ class LanguageIdentifier(object):
     items using a flexible, registry-based approach. It handles text validation,
     model initialization, and result aggregation.
 
-    :param str infile: Path to input file in impresso bz2 rebuilt format.
+    :param str infile: Path to input file in impresso bz2 rebuilt format or canonical page format.
     :param str outfile: JSON file with language predictions per content item.
     :param str impresso_ft: Path to binary fasttext LID impresso model.
     :param str wp_ft: Path to binary fasttext LID Wikipedia model.
@@ -214,6 +214,7 @@ class LanguageIdentifier(object):
     :param str git_describe: Output of git describe command for version tracking.
     :param float alphabetical_ratio_threshold: Minimum ratio of alphabetic characters
         required for language identification.
+    :param str format: Input format type ('rebuilt' or 'canonical').
 
     :attr list results: Collection of content items with language predictions.
     """
@@ -229,6 +230,8 @@ class LanguageIdentifier(object):
         round_ndigits: int,
         git_describe: str,
         alphabetical_ratio_threshold: float,
+        format: str = "rebuilt",
+        debug: bool = False,
     ):
 
         self.infile: str = infile
@@ -236,6 +239,8 @@ class LanguageIdentifier(object):
         self.impresso_ft: str = impresso_ft
         self.wp_ft: str = wp_ft
         self.minimal_text_length: int = minimal_text_length
+        self.format: str = format
+        self.debug: bool = debug
 
         self.lids: Set[str] = set(lids)
         log.info(
@@ -496,7 +501,7 @@ class LanguageIdentifier(object):
 
     def _create_base_info(self, content_item: dict) -> dict:
         """Create base information dictionary for a content item."""
-        return {
+        base_info = {
             "tp": content_item["tp"],
             "id": content_item["id"],
             "len": len(content_item.get("ft", "")),
@@ -504,6 +509,12 @@ class LanguageIdentifier(object):
             "ts": self.ts,
             "langident_stage1_version": self.git_describe or __version__,
         }
+
+        # Include text content if debug mode is enabled
+        if self.debug:
+            base_info["ft"] = content_item.get("ft", "")
+
+        return base_info
 
     def _is_text_valid_for_lid(self, content_item: dict) -> tuple[bool, str, float]:
         """
@@ -697,18 +708,124 @@ class LanguageIdentifier(object):
                 )
         log.info("Successfully wrote output for %s to %s", self.infile, self.outfile)
 
-    def next_contentitem(self) -> Iterable[dict]:
-        """Yield each content item from the input file."""
+    def _extract_text_from_page(self, page_data: dict) -> Dict[str, str]:
+        """Extract text from a canonical page format, grouped by content item ID.
+
+        :param dict page_data: Page data in canonical format
+        :return: Dictionary mapping content item IDs to their text content
+        :rtype: Dict[str, str]
+        """
+        content_items = {}
+
+        if "r" not in page_data:
+            return content_items
+
+        for region in page_data["r"]:
+            content_item_id = region.get("pOf")
+            if not content_item_id:
+                continue
+
+            region_text = []
+
+            if "p" in region:
+                for paragraph in region["p"]:
+                    paragraph_text = []
+
+                    if "l" in paragraph:
+                        for line in paragraph["l"]:
+                            line_text = []
+
+                            if "t" in line:
+                                for token in line["t"]:
+                                    if "tx" in token:
+                                        token_text = token["tx"]
+                                        line_text.append(token_text)
+
+                                        # Handle spacing: if gn (glue next) is not True, add space
+                                        if not token.get("gn", False):
+                                            line_text.append(" ")
+
+                            paragraph_text.append("".join(line_text).rstrip())
+
+                    if paragraph_text:
+                        region_text.append(" ".join(paragraph_text))
+
+            if region_text:
+                region_full_text = " ".join(region_text)
+                if content_item_id in content_items:
+                    content_items[content_item_id] += " " + region_full_text
+                else:
+                    content_items[content_item_id] = region_full_text
+
+        return content_items
+
+    def _build_content_items_from_canonical(self) -> Dict[str, dict]:
+        """Build content items dictionary from canonical format pages.
+
+        :return: Dictionary mapping content item IDs to content item objects
+        :rtype: Dict[str, dict]
+        """
+        content_items = {}
+
         if self.infile.startswith("s3://"):
             transport_params = {"client": self.s3_client}
         else:
             transport_params = {}
+
         with smart_open.open(
             self.infile, transport_params=transport_params, encoding="utf-8"
         ) as reader:
             for line in reader:
-                if line.strip():
-                    yield json.loads(line)
+                if not line.strip():
+                    continue
+
+                page_data = json.loads(line)
+                page_content_items = self._extract_text_from_page(page_data)
+
+                for content_item_id, text in page_content_items.items():
+                    if content_item_id in content_items:
+                        # Append text from this page to existing content item
+                        content_items[content_item_id]["ft"] += " " + text
+                    else:
+                        # Create new content item
+                        content_items[content_item_id] = {
+                            "id": content_item_id,
+                            "ft": text,
+                            "tp": "article",  # Default type for canonical format
+                            # Note: lg (language) field not available in canonical format
+                        }
+
+        # Clean up text for all content items
+        for content_item in content_items.values():
+            content_item["ft"] = " ".join(content_item["ft"].split())
+
+        log.info(
+            "Extracted %d content items from canonical format file %s",
+            len(content_items),
+            self.infile,
+        )
+
+        return content_items
+
+    def next_contentitem(self) -> Iterable[dict]:
+        """Yield each content item from the input file."""
+        if self.format == "canonical":
+            # For canonical format, first build all content items from pages
+            content_items = self._build_content_items_from_canonical()
+            for content_item in content_items.values():
+                yield content_item
+        else:
+            # Original rebuilt format processing
+            if self.infile.startswith("s3://"):
+                transport_params = {"client": self.s3_client}
+            else:
+                transport_params = {}
+            with smart_open.open(
+                self.infile, transport_params=transport_params, encoding="utf-8"
+            ) as reader:
+                for line in reader:
+                    if line.strip():
+                        yield json.loads(line)
 
 
 def setup_logging(log_level: int, log_file: Optional[str]) -> None:
@@ -748,13 +865,27 @@ def main():
         "-i",
         "--infile",
         default="/dev/stdin",
-        help="path to input file in impresso rebuilt format (default %(default)s)",
+        help=(
+            "path to input file in impresso rebuilt format or canonical page format"
+            " (default %(default)s)"
+        ),
     )
     parser.add_argument(
         "-o",
         "--outfile",
         default="/dev/stdout",
         help="path to output file for impresso lid json format (default %(default)s)",
+    )
+
+    # Format Selection
+    parser.add_argument(
+        "--format",
+        choices=["rebuilt", "canonical"],
+        default="rebuilt",
+        help=(
+            "input format type: 'rebuilt' for traditional format or 'canonical' for"
+            " page schema format (default %(default)s)"
+        ),
     )
 
     # Language Identification Systems
@@ -855,6 +986,13 @@ def main():
         ),
     )
 
+    # Debug option
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Include full text content in output for debugging purposes",
+    )
+
     arguments = parser.parse_args()
 
     log_levels = [
@@ -880,6 +1018,8 @@ def main():
         round_ndigits=arguments.round_ndigits,
         git_describe=arguments.git_describe,
         alphabetical_ratio_threshold=arguments.alphabetical_ratio_threshold,
+        format=arguments.format,
+        debug=arguments.debug,
     )
     processor.run()
 
