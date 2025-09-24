@@ -41,7 +41,6 @@ import time
 from collections import Counter
 from typing import Dict, List, Optional, Iterable, Set, Union, Tuple
 
-
 import fasttext
 import langdetect
 from langdetect.lang_detect_exception import LangDetectException
@@ -63,7 +62,7 @@ except ImportError:
     LINGUA_AVAILABLE = False
 
 
-from impresso_cookbook import get_s3_client, get_timestamp
+from impresso_cookbook import get_s3_client, get_timestamp, yield_s3_objects
 
 log = logging.getLogger(__name__)
 
@@ -215,6 +214,7 @@ class LanguageIdentifier(object):
     :param float alphabetical_ratio_threshold: Minimum ratio of alphabetic characters
         required for language identification.
     :param str format: Input format type ('rebuilt' or 'canonical').
+    :param str issue_file: Path to issue metadata file (required for canonical format).
 
     :attr list results: Collection of content items with language predictions.
     """
@@ -232,6 +232,7 @@ class LanguageIdentifier(object):
         alphabetical_ratio_threshold: float,
         format: str = "rebuilt",
         debug: bool = False,
+        issue_file: str = None,
     ):
 
         self.infile: str = infile
@@ -241,6 +242,11 @@ class LanguageIdentifier(object):
         self.minimal_text_length: int = minimal_text_length
         self.format: str = format
         self.debug: bool = debug
+        self.issue_file: str = issue_file
+
+        # Validate that issue_file is provided for canonical format
+        if self.format == "canonical" and not self.issue_file:
+            raise ValueError("issue_file must be provided when using canonical format")
 
         self.lids: Set[str] = set(lids)
         log.info(
@@ -759,49 +765,140 @@ class LanguageIdentifier(object):
 
         return content_items
 
+    def _load_content_item_metadata(self) -> Dict[str, dict]:
+        """Load content item metadata from issue file.
+
+        :return: Dictionary mapping content item IDs to their metadata
+        :rtype: Dict[str, dict]
+        """
+        content_item_metadata = {}
+
+        if not self.issue_file:
+            return content_item_metadata
+
+        if self.issue_file.startswith("s3://"):
+            transport_params = {"client": self.s3_client}
+        else:
+            transport_params = {}
+
+        log.info("Loading content item metadata from issue file: %s", self.issue_file)
+
+        with smart_open.open(
+            self.issue_file, transport_params=transport_params, encoding="utf-8"
+        ) as reader:
+            for line in reader:
+                if not line.strip():
+                    continue
+
+                issue_data = json.loads(line)
+
+                # Extract content items from issue
+                if "i" in issue_data:
+                    for content_item in issue_data["i"]:
+                        if "m" in content_item:
+                            metadata = content_item["m"]
+                            content_item_id = metadata.get("id")
+                            if content_item_id:
+                                content_item_metadata[content_item_id] = {
+                                    "orig_lg": metadata.get("l"),
+                                    "tp": metadata.get("tp", "article"),
+                                    "title": metadata.get("t"),
+                                    "pages": metadata.get("pp", []),
+                                }
+
+        log.info(
+            "Loaded metadata for %d content items from %s",
+            len(content_item_metadata),
+            self.issue_file,
+        )
+
+        return content_item_metadata
+
     def _build_content_items_from_canonical(self) -> Dict[str, dict]:
         """Build content items dictionary from canonical format pages.
 
         :return: Dictionary mapping content item IDs to content item objects
         :rtype: Dict[str, dict]
         """
+        # First load content item metadata from issue file
+        content_item_metadata = self._load_content_item_metadata()
+
         content_items = {}
 
-        if self.infile.startswith("s3://"):
-            transport_params = {"client": self.s3_client}
+        # Handle S3 prefix patterns
+        if self.infile.startswith("s3://") and not self.infile.endswith(".jsonl.bz2"):
+            # This is a prefix pattern, list all matching files
+            # Parse S3 path
+            s3_path = self.infile[5:]  # Remove 's3://'
+            bucket_name, prefix = s3_path.split("/", 1)
+
+            # Use yield_s3_objects to get all matching files
+            page_files = []
+            for key in yield_s3_objects(bucket_name, prefix):
+                if key.endswith(".jsonl.bz2"):
+                    page_files.append(f"s3://{bucket_name}/{key}")
+
+            log.info(
+                "Found %d files matching prefix %s",
+                len(page_files),
+                self.infile,
+            )
+
+            if not page_files:
+                log.warning("No files found matching S3 prefix: %s", self.infile)
+                return content_items
         else:
-            transport_params = {}
+            # Single file or local file
+            page_files = [self.infile]
 
-        with smart_open.open(
-            self.infile, transport_params=transport_params, encoding="utf-8"
-        ) as reader:
-            for line in reader:
-                if not line.strip():
-                    continue
+        # Process each page file
+        for page_file in page_files:
+            log.info("Processing page file: %s", page_file)
 
-                page_data = json.loads(line)
-                page_content_items = self._extract_text_from_page(page_data)
+            if page_file.startswith("s3://"):
+                transport_params = {"client": self.s3_client}
+            else:
+                transport_params = {}
 
-                for content_item_id, text in page_content_items.items():
-                    if content_item_id in content_items:
-                        # Append text from this page to existing content item
-                        content_items[content_item_id]["ft"] += " " + text
-                    else:
-                        # Create new content item
-                        content_items[content_item_id] = {
-                            "id": content_item_id,
-                            "ft": text,
-                            "tp": "article",  # Default type for canonical format
-                            # Note: lg (language) field not available in canonical format
-                        }
+            try:
+                with smart_open.open(
+                    page_file, transport_params=transport_params, encoding="utf-8"
+                ) as reader:
+                    for line in reader:
+                        if not line.strip():
+                            continue
+
+                        page_data = json.loads(line)
+                        page_content_items = self._extract_text_from_page(page_data)
+
+                        for content_item_id, text in page_content_items.items():
+                            if content_item_id in content_items:
+                                # Append text from this page to existing content item
+                                content_items[content_item_id]["ft"] += " " + text
+                            else:
+                                # Create new content item with metadata from issue file
+                                metadata = content_item_metadata.get(
+                                    content_item_id, {}
+                                )
+                                content_items[content_item_id] = {
+                                    "id": content_item_id,
+                                    "ft": text,
+                                    "tp": metadata.get("tp", "article"),
+                                    "lg": metadata.get("orig_lg"),
+                                }
+
+            except Exception as e:
+                log.error("Error processing page file %s: %s", page_file, e)
+                continue
 
         # Clean up text for all content items
         for content_item in content_items.values():
             content_item["ft"] = " ".join(content_item["ft"].split())
 
         log.info(
-            "Extracted %d content items from canonical format file %s",
+            "Extracted %d content items from %d page files with prefix %s",
             len(content_items),
+            len(page_files),
             self.infile,
         )
 
@@ -866,8 +963,10 @@ def main():
         "--infile",
         default="/dev/stdin",
         help=(
-            "path to input file in impresso rebuilt format or canonical page format"
-            " (default %(default)s)"
+            "Path to input file. For rebuilt format: single file path. For canonical"
+            " format: S3 prefix (e.g.,"
+            " s3://bucket/NEWSPAPER/pages/NEWSPAPER-YEAR/NEWSPAPER-) or single file"
+            " path (default %(default)s)"
         ),
     )
     parser.add_argument(
@@ -886,6 +985,16 @@ def main():
             "input format type: 'rebuilt' for traditional format or 'canonical' for"
             " page schema format (default %(default)s)"
         ),
+    )
+
+    # Issue file for canonical format
+    parser.add_argument(
+        "--issue-file",
+        help=(
+            "Path to issue metadata file (required for canonical format). "
+            "Example: s3://bucket/NEWSPAPER/issues/NEWSPAPER-YEAR.issue.jsonl.bz2"
+        ),
+        metavar="FILE",
     )
 
     # Language Identification Systems
@@ -995,6 +1104,10 @@ def main():
 
     arguments = parser.parse_args()
 
+    # Validate format-specific requirements
+    if arguments.format == "canonical" and not arguments.issue_file:
+        parser.error("--issue-file is required when using --format=canonical")
+
     log_levels = [
         logging.CRITICAL,
         logging.ERROR,
@@ -1020,6 +1133,7 @@ def main():
         alphabetical_ratio_threshold=arguments.alphabetical_ratio_threshold,
         format=arguments.format,
         debug=arguments.debug,
+        issue_file=arguments.issue_file,
     )
     processor.run()
 
