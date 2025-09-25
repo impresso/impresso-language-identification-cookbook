@@ -717,6 +717,9 @@ class LanguageIdentifier(object):
     def _extract_text_from_page(self, page_data: dict) -> Dict[str, str]:
         """Extract text from a canonical page format, grouped by content item ID.
 
+        Handles dehyphenation by using 'nf' (normalized form) for hyphenated tokens
+        and skipping the first part of hyphenated words marked with 'hy'.
+
         :param dict page_data: Page data in canonical format
         :return: Dictionary mapping content item IDs to their text content
         :rtype: Dict[str, str]
@@ -742,9 +745,34 @@ class LanguageIdentifier(object):
                             line_text = []
 
                             if "t" in line:
-                                for token in line["t"]:
-                                    if "tx" in token:
-                                        token_text = token["tx"]
+                                for n, token in enumerate(line["t"]):
+                                    if "tx" not in token:
+                                        continue
+
+                                    token_text = None
+                                    add_token = True
+
+                                    # Handle hyphenation
+                                    if "hy" in token and token.get("hy"):
+                                        # This is the first part of a hyphenated word, skip it
+                                        add_token = False
+                                    elif "nf" in token:
+                                        # This is the second part with normalized form
+                                        token_text = (
+                                            token["nf"]
+                                            if token["nf"] is not None
+                                            else ""
+                                        )
+                                    else:
+                                        # Regular token
+                                        token_text = (
+                                            token["tx"]
+                                            if token["tx"] is not None
+                                            else ""
+                                        )
+
+                                    # Add the token if it should be included
+                                    if add_token and token_text is not None:
                                         line_text.append(token_text)
 
                                         # Handle spacing: if gn (glue next) is not True, add space
