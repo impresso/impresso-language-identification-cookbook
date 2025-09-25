@@ -25,3 +25,11 @@ config.local.mk
 *.egg-info/
 *.dist-info/
 *.whl
+# Ignore the whole .idea folder by default
+.idea/*
+
+# But allow a few project-level settings
+!.idea/modules.xml
+!.idea/misc.xml
+!.idea/vcs.xml
+!.idea/inspectionProfiles/
