@@ -55,6 +55,13 @@ except ImportError:
     IMPRESSO_LANGIDENT_PIPELINE_AVAILABLE = False
 
 try:
+    from impresso_pipelines.ocrqa import OCRQAPipeline
+
+    IMPRESSO_OCRQA_AVAILABLE = True
+except ImportError:
+    IMPRESSO_OCRQA_AVAILABLE = False
+
+try:
     from lingua import LanguageDetectorBuilder, Language, IsoCode639_1
 
     LINGUA_AVAILABLE = True
@@ -76,12 +83,13 @@ if not IMPRESSO_LANGIDENT_PIPELINE_AVAILABLE:
         "Please install it with 'pip install impresso_pipelines' to use this feature."
     )
 
-# Log warning if lingua is not available
-if not LINGUA_AVAILABLE:
-    log.warning("lingua package not available - lingua will not be functional")
+# Log warning if impresso_ocrqa is not available
+if not IMPRESSO_OCRQA_AVAILABLE:
     log.warning(
-        "Please install it with 'pip install lingua-language-detector' to use this"
-        " feature."
+        "impresso_pipelines.ocrqa package not available - ocrqa will not be functional"
+    )
+    log.warning(
+        "Please install it with 'pip install impresso_pipelines' to use this feature."
     )
 
 
@@ -215,6 +223,7 @@ class LanguageIdentifier(object):
         required for language identification.
     :param str format: Input format type ('rebuilt' or 'canonical').
     :param str issue_file: Path to issue metadata file (required for canonical format).
+    :param bool ocrqa: Enable OCR quality assessment using impresso_pipelines.
 
     :attr list results: Collection of content items with language predictions.
     """
@@ -233,6 +242,7 @@ class LanguageIdentifier(object):
         format: str = "rebuilt",
         debug: bool = False,
         issue_file: str = None,
+        ocrqa: bool = False,
     ):
 
         self.infile: str = infile
@@ -243,10 +253,17 @@ class LanguageIdentifier(object):
         self.format: str = format
         self.debug: bool = debug
         self.issue_file: str = issue_file
+        self.ocrqa: bool = ocrqa
 
         # Validate that issue_file is provided for canonical format
         if self.format == "canonical" and not self.issue_file:
             raise ValueError("issue_file must be provided when using canonical format")
+
+        # Validate that impresso_pipelines.ocrqa is available if ocrqa is requested
+        if self.ocrqa and not IMPRESSO_OCRQA_AVAILABLE:
+            raise ValueError(
+                "impresso_pipelines.ocrqa is not available but --ocrqa was requested"
+            )
 
         self.lids: Set[str] = set(lids)
         log.info(
@@ -268,6 +285,14 @@ class LanguageIdentifier(object):
             "language_identified": 0,
             "language_disagreements": 0,
         }
+
+        # OCR QA statistics if enabled
+        if self.ocrqa:
+            self.stats["ocrqa_processed"] = 0
+            self.stats["ocrqa_failed"] = 0
+            self.stats["ocrqa_max_languages"] = (
+                {}
+            )  # Counter for languages with max OCR QA scores
 
     def run(self):
         """Run the language identification process."""
@@ -317,6 +342,14 @@ class LanguageIdentifier(object):
                 else None
             ),
         }
+
+        # Initialize OCR QA pipeline if requested
+        if self.ocrqa:
+            try:
+                models["ocrqa"] = OCRQAPipeline()
+                log.info("Successfully loaded OCR QA pipeline for %s", self.infile)
+            except Exception as e:
+                log.error("Failed to load OCR QA pipeline for %s: %s", self.infile, e)
 
         # Initialize only requested models
         for lid_system in self.lids:
@@ -449,10 +482,140 @@ class LanguageIdentifier(object):
             log.error("LINGUA-ERROR for %s: %s", self.infile, sys.exc_info()[0])
             return None
 
+    def _apply_ocrqa_all_languages(self, text: str, model) -> Optional[dict]:
+        """Apply OCR quality assessment for all supported languages.
+
+        :param str text: Text to assess
+        :param model: OCR QA pipeline model
+        :return: OCR QA results dictionary with language scores or None if failed
+        :rtype: Optional[dict]
+        """
+        try:
+            # Get the list of supported languages from the model
+            supported_languages = model.SUPPORTED_LANGUAGES
+
+            # Initialize results dictionary - just the scores
+            ocrqa_results = {}
+
+            # Run OCR QA for each supported language
+            for language in supported_languages:
+                try:
+                    result = model(text, language=language, model_id=True)
+                    # Store the result for this language
+                    ocrqa_results[language] = result
+                    log.debug(
+                        "OCR QA completed for language %s on content item %s",
+                        language,
+                        getattr(self, "_current_item_id", "unknown"),
+                    )
+                except Exception as e:
+                    log.warning("OCR QA failed for language %s: %s", language, e)
+                    ocrqa_results[language] = None
+
+            return ocrqa_results
+
+        except Exception as e:
+            log.error("OCR-QA-ALL-LANGUAGES-ERROR for %s: %s", self.infile, e)
+            return None
+
+    def _create_base_info(self, content_item: dict) -> dict:
+        """Create base information dictionary for a content item."""
+        base_info = {
+            "tp": content_item["tp"],
+            "id": content_item["id"],
+            "len": len(content_item.get("ft", "")),
+            "orig_lg": content_item.get("lg"),
+            "ts": self.ts,
+            "langident_stage1_version": self.git_describe or __version__,
+        }
+
+        # Include text content if debug mode is enabled
+        if self.debug:
+            base_info["ft"] = content_item.get("ft", "")
+
+        return base_info
+
+    def _is_text_valid_for_lid(self, content_item: dict) -> tuple[bool, str, float]:
+        """
+        Check if text is valid for language identification.
+
+        Returns:
+            Tuple of (is_valid, text, alphabetical_ratio_value)
+        """
+        if "ft" not in content_item or not isinstance(content_item["ft"], str):
+            return False, "", 0.0
+
+        text = content_item["ft"].strip()
+        if len(text) < self.minimal_text_length:
+            return False, text, 0.0
+
+        alpha_ratio = round(alphabetical_ratio(text), 2)
+        if alpha_ratio < self.alphabetical_ratio_threshold:
+            return False, text, alpha_ratio
+
+        return True, text, alpha_ratio
+
+    def _get_ocrqa_max_languages(self, ocrqa_result: dict) -> Optional[str]:
+        """Get the language(s) with the highest OCR QA score from results.
+
+        :param dict ocrqa_result: OCR QA results dictionary
+        :return: String of max language(s), joined by "_" if tied, or None if no valid scores
+        :rtype: Optional[str]
+        """
+        if not ocrqa_result:
+            return None
+
+        # Extract valid scores (non-None values that have numeric scores)
+        valid_scores = {}
+        for lang, result in ocrqa_result.items():
+            if result is not None:
+                # Try to extract score from result - this depends on OCR QA pipeline output format
+                # Assuming the result has a 'score' field, adjust as needed based on actual format
+                try:
+                    if isinstance(result, dict) and "score" in result:
+                        score = result["score"]
+                    elif isinstance(result, (int, float)):
+                        score = result
+                    else:
+                        # Try to find a numeric value in the result
+                        score = None
+                        if isinstance(result, dict):
+                            for key in ["score", "quality", "confidence", "value"]:
+                                if key in result and isinstance(
+                                    result[key], (int, float)
+                                ):
+                                    score = result[key]
+                                    break
+
+                    if score is not None and isinstance(score, (int, float)):
+                        valid_scores[lang] = score
+                except Exception as e:
+                    log.debug(
+                        "Could not extract score from OCR QA result for %s: %s", lang, e
+                    )
+                    continue
+
+        if not valid_scores:
+            return None
+
+        # Find maximum score
+        max_score = max(valid_scores.values())
+
+        # Get all languages with maximum score
+        max_languages = [
+            lang for lang, score in valid_scores.items() if score == max_score
+        ]
+
+        # Return sorted and joined languages
+        return "_".join(sorted(max_languages))
+
     def _perform_language_identification(
         self, text: str, models: dict, jinfo: dict
     ) -> None:
         """Perform language identification with all configured models."""
+
+        # Store current item ID for OCR QA logging
+        self._current_item_id = jinfo["id"]
 
         # Define model handlers
         model_handlers = {
@@ -505,42 +668,40 @@ class LanguageIdentifier(object):
                 )
                 jinfo[lid_system] = None
 
-    def _create_base_info(self, content_item: dict) -> dict:
-        """Create base information dictionary for a content item."""
-        base_info = {
-            "tp": content_item["tp"],
-            "id": content_item["id"],
-            "len": len(content_item.get("ft", "")),
-            "orig_lg": content_item.get("lg"),
-            "ts": self.ts,
-            "langident_stage1_version": self.git_describe or __version__,
-        }
+        # Apply OCR QA if enabled
+        if self.ocrqa and "ocrqa" in models:
+            ocrqa_result = self._apply_ocrqa_all_languages(text, models["ocrqa"])
+            if ocrqa_result:
+                jinfo["ocrqa"] = ocrqa_result
+                num_languages = len(ocrqa_result)
+                num_successful = len(
+                    [score for score in ocrqa_result.values() if score is not None]
+                )
+                log.debug(
+                    "OCR QA completed for %s: %d/%d languages successful",
+                    jinfo["id"],
+                    num_successful,
+                    num_languages,
+                )
 
-        # Include text content if debug mode is enabled
-        if self.debug:
-            base_info["ft"] = content_item.get("ft", "")
+                # Update OCR QA statistics
+                self.stats["ocrqa_processed"] += 1
 
-        return base_info
+                # Track languages with maximum OCR QA scores
+                max_langs = self._get_ocrqa_max_languages(ocrqa_result)
+                if max_langs:
+                    if max_langs not in self.stats["ocrqa_max_languages"]:
+                        self.stats["ocrqa_max_languages"][max_langs] = 0
+                    self.stats["ocrqa_max_languages"][max_langs] += 1
 
-    def _is_text_valid_for_lid(self, content_item: dict) -> tuple[bool, str, float]:
-        """
-        Check if text is valid for language identification.
+            else:
+                jinfo["ocrqa"] = None
+                log.debug("No OCR QA result for %s", jinfo["id"])
+                self.stats["ocrqa_failed"] += 1
 
-        Returns:
-            Tuple of (is_valid, text, alphabetical_ratio_value)
-        """
-        if "ft" not in content_item or not isinstance(content_item["ft"], str):
-            return False, "", 0.0
-
-        text = content_item["ft"].strip()
-        if len(text) < self.minimal_text_length:
-            return False, text, 0.0
-
-        alpha_ratio = round(alphabetical_ratio(text), 2)
-        if alpha_ratio < self.alphabetical_ratio_threshold:
-            return False, text, alpha_ratio
-
-        return True, text, alpha_ratio
+        # Clean up temporary variable
+        if hasattr(self, "_current_item_id"):
+            delattr(self, "_current_item_id")
 
     def _check_language_disagreements(self, jinfo: dict) -> None:
         """Check for disagreements between language identifiers and log them."""
@@ -616,6 +777,50 @@ class LanguageIdentifier(object):
                 log.info(
                     "STATS-%s\t%d (%.1f%%)", confusion_key, count, (count / total) * 100
                 )
+
+            # Log OCR QA statistics if enabled
+            if self.ocrqa:
+                ocrqa_total = self.stats.get("ocrqa_processed", 0) + self.stats.get(
+                    "ocrqa_failed", 0
+                )
+                if ocrqa_total > 0:
+                    log.info(
+                        "STATS-OCRQA-PROCESSED\t%d (%.1f%%)",
+                        self.stats.get("ocrqa_processed", 0),
+                        (self.stats.get("ocrqa_processed", 0) / ocrqa_total) * 100,
+                    )
+                    log.info(
+                        "STATS-OCRQA-FAILED\t%d (%.1f%%)",
+                        self.stats.get("ocrqa_failed", 0),
+                        (self.stats.get("ocrqa_failed", 0) / ocrqa_total) * 100,
+                    )
+
+                    # Log top languages with maximum OCR QA scores
+                    max_lang_stats = self.stats.get("ocrqa_max_languages", {})
+                    if max_lang_stats:
+                        log.info("STATS-OCRQA-MAX-LANGUAGES-TOP10:")
+                        # Sort by count and show top 10
+                        sorted_max_langs = sorted(
+                            max_lang_stats.items(), key=lambda x: x[1], reverse=True
+                        )[:10]
+                        for max_langs, count in sorted_max_langs:
+                            percentage = (
+                                count / self.stats.get("ocrqa_processed", 1)
+                            ) * 100
+                            log.info(
+                                "STATS-OCRQA-MAX-LANG-%s\t%d (%.1f%%)",
+                                max_langs,
+                                count,
+                                percentage,
+                            )
+                else:
+                    log.info(
+                        "STATS-OCRQA-PROCESSED\t%d",
+                        self.stats.get("ocrqa_processed", 0),
+                    )
+                    log.info(
+                        "STATS-OCRQA-FAILED\t%d", self.stats.get("ocrqa_failed", 0)
+                    )
         else:
             log.info("STATS-PROCESSED-ITEMS\t%d", total)
             log.info("STATS-SKIPPED-NO-TEXT\t%d", self.stats["skipped_no_text"])
@@ -633,6 +838,23 @@ class LanguageIdentifier(object):
             for confusion_key in sorted(confusion_stats.keys()):
                 count = confusion_stats[confusion_key]
                 log.info("STATS-%s\t%d", confusion_key, count)
+
+            # Log OCR QA statistics if enabled
+            if self.ocrqa:
+                log.info(
+                    "STATS-OCRQA-PROCESSED\t%d", self.stats.get("ocrqa_processed", 0)
+                )
+                log.info("STATS-OCRQA-FAILED\t%d", self.stats.get("ocrqa_failed", 0))
+
+                # Log languages with maximum OCR QA scores
+                max_lang_stats = self.stats.get("ocrqa_max_languages", {})
+                if max_lang_stats:
+                    log.info("STATS-OCRQA-MAX-LANGUAGES-TOP10:")
+                    sorted_max_langs = sorted(
+                        max_lang_stats.items(), key=lambda x: x[1], reverse=True
+                    )[:10]
+                    for max_langs, count in sorted_max_langs:
+                        log.info("STATS-OCRQA-MAX-LANG-%s\t%d", max_langs, count)
 
     def language_identification(self) -> None:
         """Run multiple language identifications with the models provided and update results."""
@@ -1130,6 +1352,16 @@ def main():
         help="Include full text content in output for debugging purposes",
     )
 
+    # Add OCR QA option
+    parser.add_argument(
+        "--ocrqa",
+        action="store_true",
+        help=(
+            "Enable OCR quality assessment using impresso_pipelines.ocrqa for all"
+            " supported languages"
+        ),
+    )
+
     arguments = parser.parse_args()
 
     # Validate format-specific requirements
@@ -1162,6 +1394,7 @@ def main():
         format=arguments.format,
         debug=arguments.debug,
         issue_file=arguments.issue_file,
+        ocrqa=arguments.ocrqa,
     )
     processor.run()
 
