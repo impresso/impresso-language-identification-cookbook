@@ -3,30 +3,60 @@
 """
 Language identification module for newspaper content items.
 
-This module provides a flexible framework for applying multiple language identification
-(LID) systems to content items. It supports various LID systems including:
-- langdetect: Statistical language detection
-- langid: Language identification using n-gram features
-- FastText models: Including custom impresso and Wikipedia models
-- impresso_langident_pipeline: Advanced language identification using the impresso pipeline
+This module provides a flexible framework for running multiple language identification
+(LID) tools in parallel on the same content items. It allows comparison and analysis
+of results from different LID systems including:
 
-The module uses a dynamic registry pattern to easily add new LID systems and handles
-text validation, model initialization, and result aggregation in a modular way.
+- langdetect: Statistical language detection using character n-grams
+- langid: Language identification using n-gram features
+- FastText models: Including custom impresso and Wikipedia-trained models
+- impresso_langident_pipeline: Advanced language identification using the impresso pipeline
+- lingua: High-accuracy language detection library
+
+The module supports multiple input formats:
+- **Rebuilt format**: Traditional impresso content item format (JSONL with content items)
+- **Canonical format**: Impresso canonical page schema format (requires issue metadata file)
+
+Additional capabilities:
+- **OCR Quality Assessment**: Optional evaluation of OCR quality for all supported languages
+  using the impresso_pipelines.ocrqa module
+
+The module uses a dynamic registry pattern to easily configure which LID systems to run
+and handles text validation, model initialization, and result aggregation in a modular way.
+All configured LID systems are applied to each content item, and their results are stored
+side-by-side in the output for comparison.
 
 Key features:
+- Parallel execution of multiple LID systems on the same content items
+- Support for both rebuilt and canonical page formats
 - Configurable text length and alphabetical ratio thresholds
-- Support for variable number of LID models
+- Support for variable number of LID models (from 1 to all available)
 - Robust error handling for individual models
+- Detection and logging of disagreements between LID systems
+- Optional OCR quality assessment across multiple languages
 - S3 and local file support for input/output
-- Comprehensive logging with structured output
+- Comprehensive logging with structured output and statistics
 
 Example usage:
+    # Compare results from multiple LID systems on rebuilt format:
     processor = LanguageIdentifier(
         infile="input.jsonl",
         outfile="output.jsonl",
-        lids=["langdetect", "langid"],
+        lids=["langdetect", "langid", "impresso_ft", "wp_ft"],
         minimal_text_length=20,
         alphabetical_ratio_threshold=0.0  # Default: no alphabetical ratio filtering
+    )
+    processor.run()
+
+    # Use canonical format with OCR quality assessment:
+    processor = LanguageIdentifier(
+        infile="s3://bucket/NEWSPAPER/pages/NEWSPAPER-YEAR/NEWSPAPER-",
+        outfile="output.jsonl",
+        lids=["impresso_langident_pipeline", "lingua"],
+        format="canonical",
+        issue_file="s3://bucket/NEWSPAPER/issues/NEWSPAPER-YEAR.issue.jsonl.bz2",
+        ocrqa=True,
+        minimal_text_length=20
     )
     processor.run()
 """
