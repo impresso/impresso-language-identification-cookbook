@@ -32,7 +32,7 @@ a three-step approach:
    and assess the confidence of a classifier by comparing against the ensemble
    decision (stage 1b)
 3. predict the final language of an article following a rule-based approach and
-   ensemble voting (stage 2)
+   ensemble voting (ensemble stage)
 
 For our model `impresso_ft`, we selected and trained specifically on items where
 the original language was different from the predicted languages, and on
@@ -122,12 +122,20 @@ texts. The corresponding build command is:
 make langident-target
 ```
 
-This command runs all three stages (1a, 1b, and 2) in sequence. To run individual stages:
+This command runs all three stages (1a, 1b, and ensemble) in sequence. To run individual stages:
 
 ```sh
 make impresso-lid-stage1a-target  # Initial LID predictions only
 make impresso-lid-stage1b-target  # Collection statistics only
-make impresso-lid-stage2-target   # Final ensemble decisions only
+make impresso-lid-ensemble-target # Final ensemble decisions only
+```
+
+# To use the new script name in any documentation that mentions the specific script:
+
+```sh
+# Stage 1a uses impresso_langident_systems.py
+# Stage 1b uses newspaper_statistics.py
+# Ensemble uses impresso_ensemble_lid.py
 ```
 
 ### Available Language Identification Systems
@@ -224,7 +232,7 @@ make impresso-lid-stage1b-target
 This command can only be run after stage 1a has been completed. It processes
 the aggregated statistics for the entire collection and must be run sequentially.
 
-### Stage 2: Deciding the language per content item
+### Stage Ensemble: Deciding the language per content item
 
 Given the output from various LID systems and the original language information,
 we finally decide the language of an article according to the following rules:
@@ -263,10 +271,10 @@ we finally decide the language of an article according to the following rules:
 To perform this stage, run the following command:
 
 ```sh
-make impresso-lid-stage2-target
+make impresso-lid-ensemble-target
 ```
 
-The process of stage 1b and 2 is relatively fast compared to stage 1a since it processes the already-computed predictions rather than running the language identification models on raw text.
+The process of stage 1b and ensemble is relatively fast compared to stage 1a since it processes the already-computed predictions rather than running the language identification models on raw text.
 
 ## Preparing the data release
 
@@ -290,7 +298,7 @@ make impresso-lid-upload-release-to-s3
 
 ## Creating LID statistics
 
-During stage 2, diagnostics files in JSON format are produced for each collection
+During the ensemble stage, diagnostics files in JSON format are produced for each collection
 that aggregate information from the individual content item files. These statistics
 can be aggregated across the entire collection:
 

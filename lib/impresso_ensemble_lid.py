@@ -47,7 +47,7 @@ from impresso_cookbook import get_s3_client, get_timestamp, read_json, setup_log
 log = logging.getLogger(__name__)
 
 
-class ImpressoLanguageIdentifier(object):
+class ImpressoLanguageIdentifierEnsemble(object):
     """Identify language for each content item using ensemble decision
 
     :param str infile: JSON file with language predictions per content item.
@@ -1003,7 +1003,7 @@ if __name__ == "__main__":
     log.info("%s", arguments)
 
     # Create ImpressoLanguageIdentifier instance
-    ImpressoLanguageIdentifier(
+    ImpressoLanguageIdentifierEnsemble(
         infile=arguments.infile,
         outfile=arguments.outfile,
         newspaper_stats_filename=arguments.newspaper_stats_filename,

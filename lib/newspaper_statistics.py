@@ -219,7 +219,7 @@ class AggregatorLID:
         self.output = (
             smart_open.open(outfile, mode="w", encoding="utf-8") if outfile else None
         )
-        # Add timing and logging attributes like in language_identification.py
+        # Add timing and logging attributes like in impresso_langident_systems.py
         self.start_time = None
         self.s3_client = get_s3_client()
         self.ts = get_timestamp()
@@ -341,7 +341,7 @@ class AggregatorLID:
         """
 
         for input_file in self.infile:
-            # Handle S3 transport parameters like in language_identification.py
+            # Handle S3 transport parameters like in impresso_langident_systems.py
             if input_file.startswith("s3://"):
                 transport_params = {"client": self.s3_client}
             else:

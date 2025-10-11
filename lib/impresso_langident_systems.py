@@ -232,30 +232,11 @@ def fasttext_lid(
     return result
 
 
-class LanguageIdentifier(object):
-    """Predict languages for content items.
+class ImpressoLanguageIdentifierSystems(object):
+    """Apply multiple language identification systems to content items.
 
-    This class applies multiple language identification systems to newspaper content
-    items using a flexible, registry-based approach. It handles text validation,
-    model initialization, and result aggregation.
-
-    :param str infile: Path to input file in impresso bz2 rebuilt format or canonical page format.
-    :param str outfile: JSON file with language predictions per content item.
-    :param str impresso_ft: Path to binary fasttext LID impresso model.
-    :param str wp_ft: Path to binary fasttext LID Wikipedia model.
-    :param int minimal_text_length: Threshold for text length in characters to apply
-        automatic language identification.
-    :param list lids: List of LID systems to use (e.g., ['langdetect', 'langid']).
-        Available systems: langdetect, langid, impresso_ft, wp_ft, impresso_langident_pipeline, lingua.
-    :param int round_ndigits: Number of decimal places in the output.
-    :param str git_describe: Output of git describe command for version tracking.
-    :param float alphabetical_ratio_threshold: Minimum ratio of alphabetic characters
-        required for language identification.
-    :param str format: Input format type ('rebuilt' or 'canonical').
-    :param str issue_file: Path to issue metadata file (required for canonical format).
-    :param bool ocrqa: Enable OCR quality assessment using impresso_pipelines.
-
-    :attr list results: Collection of content items with language predictions.
+    This class runs multiple LID systems in parallel on the same content items
+    for comparison and analysis.
     """
 
     def __init__(
@@ -556,7 +537,7 @@ class LanguageIdentifier(object):
             "len": len(content_item.get("ft", "")),
             "orig_lg": content_item.get("lg"),
             "ts": self.ts,
-            "langident_stage1_version": self.git_describe or __version__,
+            "langident_systems_version": self.git_describe or __version__,
         }
 
         # Include text content if debug mode is enabled
