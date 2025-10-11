@@ -13,7 +13,7 @@ langdetect = "*"
 fasttext = "*"
 numpy = "1.26.*"
 smart-open= {extras = ["s3","http"], version = "==6.4"}
-impresso-pipelines = {extras= ["langident"]}
+impresso-pipelines = {extras= ["langident","ocrqa"]}
 lingua-language-detector = "*"
 impresso-cookbook = {editable = true, path = "./cookbook/lib",version="1.0.3"}
 jsonschema = "*"
