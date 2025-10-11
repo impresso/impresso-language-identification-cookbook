@@ -99,7 +99,12 @@ except ImportError:
     LINGUA_AVAILABLE = False
 
 
-from impresso_cookbook import get_s3_client, get_timestamp, yield_s3_objects
+from impresso_cookbook import (
+    get_s3_client,
+    get_timestamp,
+    yield_s3_objects,
+    setup_logging,
+)
 
 log = logging.getLogger(__name__)
 
@@ -1186,25 +1191,6 @@ class ImpressoLanguageIdentifierSystems(object):
                         yield json.loads(line)
 
 
-def setup_logging(log_level: int, log_file: Optional[str]) -> None:
-    """Configure logging."""
-
-    class SmartFileHandler(logging.FileHandler):
-        def _open(self):
-            return smart_open.open(self.baseFilename, self.mode, encoding="utf-8")
-
-    handlers = [logging.StreamHandler()]
-    if log_file:
-        handlers.append(SmartFileHandler(log_file, mode="w"))
-
-    logging.basicConfig(
-        level=log_level,
-        format="%(asctime)-15s %(filename)s:%(lineno)d %(levelname)s: %(message)s",
-        handlers=handlers,
-        force=True,
-    )
-
-
 def main():
     import argparse
 
@@ -1319,19 +1305,13 @@ def main():
 
     # Logging and Verbosity
     parser.add_argument(
-        "-l", "--logfile", dest="logfile", help="write log to FILE", metavar="FILE"
+        "--log-file", dest="log_file", help="Write log to FILE", metavar="FILE"
     )
     parser.add_argument(
-        "-v",
-        "--verbose",
-        dest="verbose",
-        default=3,
-        type=int,
-        metavar="LEVEL",
-        help=(
-            "set verbosity level: 0=CRITICAL, 1=ERROR, 2=WARNING, 3=INFO 4=DEBUG"
-            " (default %(default)s)"
-        ),
+        "--log-level",
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="Logging level (default: %(default)s)",
     )
 
     # Version Information
@@ -1379,6 +1359,31 @@ def main():
     if arguments.format == "canonical" and not arguments.issue_file:
         parser.error("--issue-file is required when using --format=canonical")
 
+    setup_logging(arguments.log_level, arguments.log_file)
+
+    log.info("%s", arguments)
+
+    # Directly call LanguageIdentifier with relevant arguments
+    processor = LanguageIdentifier(
+        infile=arguments.infile,
+        outfile=arguments.outfile,
+        impresso_ft=arguments.impresso_ft,
+        wp_ft=arguments.wp_ft,
+        minimal_text_length=arguments.minimal_text_length,
+        lids=arguments.lids,
+        round_ndigits=arguments.round_ndigits,
+        git_describe=arguments.git_describe,
+        alphabetical_ratio_threshold=arguments.alphabetical_ratio_threshold,
+        format=arguments.format,
+        debug=arguments.debug,
+        issue_file=arguments.issue_file,
+        ocrqa=arguments.ocrqa,
+    )
+    processor.run()
+
+
+if __name__ == "__main__":
+    main()
     log_levels = [
         logging.CRITICAL,
         logging.ERROR,

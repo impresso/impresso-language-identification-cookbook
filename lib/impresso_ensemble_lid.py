@@ -831,14 +831,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=DESCRIPTION)
     parser.add_argument(
         "--log-file",
-        "--logfile",
         dest="log_file",
         help="Write log to FILE",
         metavar="FILE",
     )
     parser.add_argument(
         "--log-level",
-        default="WARNING",
+        default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
         help="Logging level (default: %(default)s)",
     )
@@ -980,25 +979,6 @@ if __name__ == "__main__":
     arguments = parser.parse_args()
 
     setup_logging(arguments.log_level, arguments.log_file)
-
-    # Suppress debug messages from third-party libraries
-    # Only show WARNING and above for these noisy libraries
-    third_party_loggers = [
-        "smart_open",
-        "smart_open_lib",
-        "urllib3",
-        "urllib3.connectionpool",
-        "botocore",
-        "boto3",
-        "s3transfer",
-        "requests",
-        "connectionpool",
-        "hooks",
-        "parsers",
-    ]
-
-    for logger_name in third_party_loggers:
-        logging.getLogger(logger_name).setLevel(logging.WARNING)
 
     log.info("%s", arguments)
 
