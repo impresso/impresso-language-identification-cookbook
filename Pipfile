@@ -13,11 +13,12 @@ langdetect = "*"
 fasttext = "*"
 numpy = "1.26.*"
 smart-open= {extras = ["s3","http"], version = "==6.4"}
-impresso-pipelines = {extras= ["langident","ocrqa"]}
 lingua-language-detector = "*"
 jsonschema = ">=4.17.0,<5"
 types-jsonschema = "*"
 impresso-cookbook = {file = "cookbook/lib", editable = true}
+impresso-pipelines = {git = "https://github.com/impresso/impresso-pipelines.git", version= "~=0.5",ref = "simplifiedv2", extras = ["langident","ocrqa"]}
+aws2 = "*"
 
 [requires]
 python_version = "3.11"

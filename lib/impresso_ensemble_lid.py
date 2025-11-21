@@ -18,6 +18,10 @@ The ensemble decision process includes multiple rules:
 - Weighted voting with confidence scores
 - Special handling for original language metadata
 
+The output includes OCR quality assessment (OCRQA) scores when available. These
+scores indicate the estimated quality of the OCR text for each language and can
+be used to evaluate the reliability of the language identification.
+
 Example:
     $ python impresso_ensemble_lid.py \\
         -i predictions.jsonl \\
@@ -34,28 +38,23 @@ import datetime
 import json
 import logging
 import sys
-import time
 from collections import Counter, defaultdict
 from typing import (
     DefaultDict,
     Dict,
     Iterable,
     List,
-    Optional,
     Set,
-    Any,
     Tuple,
+    Any,
+    Optional,
     TypedDict,
     cast,
 )
-
 import jq
 import jsonschema
-import jsonschema.exceptions
-from jsonschema.protocols import Validator
+from jsonschema import Draft6Validator
 import smart_open
-
-
 from impresso_cookbook import get_s3_client, get_timestamp, read_json, setup_logging
 
 log = logging.getLogger(__name__)
@@ -68,7 +67,7 @@ FILTER = r"""
   lg_decision,
   tp,
   len,
-  orig_lg,
+  orig_lg: (if .orig_lg | type == "array" then .orig_lg[0].lang else .orig_lg end),
   alphabetical_ratio,
   impresso_language_identifier_version,
   year,
@@ -83,10 +82,6 @@ FILTER = r"""
 """
 
 project = jq.compile(FILTER)
-
-
-def transform(item):
-    return project.input(item).first()
 
 
 class LidPrediction(TypedDict):
@@ -154,7 +149,6 @@ class ImpressoLanguageIdentifierEnsemble:
 
         self.git_describe: str = git_describe
         self.diagnostics_json: Optional[str] = diagnostics_json
-        self.start_time: Optional[float] = None
         self.s3_client: Any = get_s3_client()
         self.ts: str = get_timestamp()
         self.lids: Set[str] = lids - {"orig_lg"}
@@ -178,11 +172,9 @@ class ImpressoLanguageIdentifierEnsemble:
         self.exclude_lb: Set[str] = set(exclude_lb or [])
 
         self.schema: Optional[Dict[str, Any]] = None
-        self.schema_validator: Optional[Validator] = None
+        self.schema_validator: Optional[Draft6Validator] = None
         self.stats: DefaultDict[str, Counter[str]] = defaultdict(Counter)
-        # Keys tracked inside update_stats for diagnostics.
-        # Order matters; defines which per-field counters are populated.
-        self.stats_keys: List[str] = ["lg", "orig_lg", "tp", "lg_decision"]
+        self.stats_keys: List[str] = ["lg", "tp", "lg_decision"]
         self.newspaper_stats: Dict[str, Any] = read_json(
             newspaper_stats_filename, self.s3_client
         )
@@ -193,15 +185,7 @@ class ImpressoLanguageIdentifierEnsemble:
             self.load_schema()
 
     def run(self) -> None:
-        """Run the application.
-
-        This method orchestrates the entire language identification process by:
-        1. Processing all content items and making language decisions
-        2. Writing the results to the output file
-        3. Updating and writing diagnostic statistics
-        """
-
-        self.start_time = time.time()
+        """Run the application."""
 
         log.info("Starting ensemble language identification")
         log.info("Input file: %s", self.infile)
@@ -212,12 +196,6 @@ class ImpressoLanguageIdentifierEnsemble:
         self.write_output()
         self.update_stats()
         self.write_diagnostics()
-
-        # Log compute time
-        total_time = time.time() - self.start_time
-        log.info(
-            "Ensemble language identification finished in %.2f seconds.", total_time
-        )
 
     def load_schema(self) -> None:
         """
@@ -297,7 +275,9 @@ class ImpressoLanguageIdentifierEnsemble:
                 encoding="utf-8",
                 transport_params=transport_params,
             ) as of:
-                print(json.dumps(self.stats), file=of)
+                diagnostics_data: Dict[str, Any] = dict(self.stats)
+                diagnostics_data["ts"] = self.ts
+                print(json.dumps(diagnostics_data), file=of)
 
     def next_content_item(self) -> Iterable[Dict[str, Any]]:
         """Yield next content item from the input file.
@@ -532,13 +512,10 @@ class ImpressoLanguageIdentifierEnsemble:
             )
 
         if decision:
-            sorted_decision = sorted(
-                decision.items(), key=lambda item: item[1], reverse=True
-            )
             log.debug(
                 "Content item %s: Final vote scores: %s",
                 content_item["id"],
-                sorted_decision,
+                sorted(decision.items(), key=lambda item: item[1], reverse=True),
             )
         else:
             log.debug("Content item %s: No votes collected", content_item["id"])
@@ -553,7 +530,7 @@ class ImpressoLanguageIdentifierEnsemble:
 
         for c in self.next_content_item():
             log.info("Processing %s", c["id"])
-            transformed = transform(self.decide_lg(c))
+            transformed = project.input(self.decide_lg(c)).first()
             self.results.append(transformed)
 
     def decide_lg(self, content_item: Dict[str, Any]) -> Dict[str, Any]:

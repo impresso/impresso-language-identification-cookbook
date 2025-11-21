@@ -71,6 +71,7 @@ import time
 from collections import Counter
 from typing import Dict, List, Optional, Iterable, Set, Union, Tuple
 
+
 import fasttext
 import langdetect
 from langdetect.lang_detect_exception import LangDetectException
@@ -259,6 +260,8 @@ class ImpressoLanguageIdentifierSystems(object):
         debug: bool = False,
         issue_file: str = None,
         ocrqa: bool = False,
+        ocrqa_repo: str = None,
+        ocrqa_version: str = "main",
     ):
 
         self.infile: str = infile
@@ -270,6 +273,8 @@ class ImpressoLanguageIdentifierSystems(object):
         self.debug: bool = debug
         self.issue_file: str = issue_file
         self.ocrqa: bool = ocrqa
+        self.ocrqa_repo: str = ocrqa_repo
+        self.ocrqa_version: str = ocrqa_version
 
         # Validate that issue_file is provided for canonical format
         if self.format == "canonical" and not self.issue_file:
@@ -301,6 +306,10 @@ class ImpressoLanguageIdentifierSystems(object):
             "language_identified": 0,
             "language_disagreements": 0,
         }
+
+        # Initialize language prediction counters for each LID system
+        for lid_system in self.lids:
+            self.stats[f"{lid_system}_predictions"] = {}
 
         # OCR QA statistics if enabled
         if self.ocrqa:
@@ -362,8 +371,16 @@ class ImpressoLanguageIdentifierSystems(object):
         # Initialize OCR QA pipeline if requested
         if self.ocrqa:
             try:
-                models["ocrqa"] = OCRQAPipeline()
-                log.info("Successfully loaded OCR QA pipeline for %s", self.infile)
+                models["ocrqa"] = OCRQAPipeline(
+                    repo_id=self.ocrqa_repo, revision=self.ocrqa_version
+                )
+                log.info(
+                    "Successfully loaded OCR QA pipeline for %s (repo: %s,"
+                    " version: %s)",
+                    self.infile,
+                    self.ocrqa_repo,
+                    self.ocrqa_version,
+                )
             except Exception as e:
                 log.error("Failed to load OCR QA pipeline for %s: %s", self.infile, e)
 
@@ -676,6 +693,14 @@ class ImpressoLanguageIdentifierSystems(object):
                         lid_system,
                         self.infile,
                     )
+                else:
+                    # Track the most probable language prediction
+                    if isinstance(result, list) and len(result) > 0:
+                        best_lang = result[0]["lang"]
+                        stats_key = f"{lid_system}_predictions"
+                        if best_lang not in self.stats[stats_key]:
+                            self.stats[stats_key][best_lang] = 0
+                        self.stats[stats_key][best_lang] += 1
             else:
                 log.warning(
                     "No handler defined for LID system %s when processing %s",
@@ -794,6 +819,25 @@ class ImpressoLanguageIdentifierSystems(object):
                     "STATS-%s\t%d (%.1f%%)", confusion_key, count, (count / total) * 100
                 )
 
+            # Log language prediction statistics for each LID system
+            for lid_system in self.lids:
+                stats_key = f"{lid_system}_predictions"
+                if stats_key in self.stats and self.stats[stats_key]:
+                    log.info(
+                        "STATS-PER_LID_SYSTEM_%s-TOP10:",
+                        stats_key.replace("_", "-"),
+                    )
+                    sorted_langs = sorted(
+                        self.stats[stats_key].items(), key=lambda x: x[1], reverse=True
+                    )[:10]
+                    for lang, count in sorted_langs:
+                        log.info(
+                            "STATS-PER_LID_SYSTEM_%s-%s\t%d",
+                            lid_system.replace("_", "-"),
+                            lang,
+                            count,
+                        )
+
             # Log OCR QA statistics if enabled
             if self.ocrqa:
                 ocrqa_total = self.stats.get("ocrqa_processed", 0) + self.stats.get(
@@ -875,7 +919,7 @@ class ImpressoLanguageIdentifierSystems(object):
     def language_identification(self) -> None:
         """Run multiple language identifications with the models provided and update results."""
         models = self._initialize_models()
-
+        jinfo = {}
         for content_item in self.next_contentitem():
             log.debug("WORKING ON %s", content_item["id"])
 
@@ -1066,7 +1110,7 @@ class ImpressoLanguageIdentifierSystems(object):
                             content_item_id = metadata.get("id")
                             if content_item_id:
                                 content_item_metadata[content_item_id] = {
-                                    "orig_lg": metadata.get("l"),
+                                    "orig_lg": metadata.get("lg"),
                                     "tp": metadata.get("tp", "article"),
                                     "title": metadata.get("t"),
                                     "pages": metadata.get("pp", []),
@@ -1352,6 +1396,24 @@ def main():
             " supported languages"
         ),
     )
+    parser.add_argument(
+        "--ocrqa-repo",
+        type=str,
+        default=None,
+        help=(
+            "Hugging Face repository ID for OCR QA models. If not specified, uses"
+            " the default repository from OCRQAPipeline"
+        ),
+    )
+    parser.add_argument(
+        "--ocrqa-version",
+        type=str,
+        default="main",
+        help=(
+            "Repository revision (branch, tag, or commit hash) for OCR QA models"
+            " (default: %(default)s)"
+        ),
+    )
 
     arguments = parser.parse_args()
 
@@ -1359,12 +1421,12 @@ def main():
     if arguments.format == "canonical" and not arguments.issue_file:
         parser.error("--issue-file is required when using --format=canonical")
 
-    setup_logging(arguments.log_level, arguments.log_file)
+    setup_logging(arguments.log_level, arguments.log_file, logger=log)
 
     log.info("%s", arguments)
 
     # Directly call LanguageIdentifier with relevant arguments
-    processor = LanguageIdentifier(
+    processor = ImpressoLanguageIdentifierSystems(
         infile=arguments.infile,
         outfile=arguments.outfile,
         impresso_ft=arguments.impresso_ft,
@@ -1378,39 +1440,8 @@ def main():
         debug=arguments.debug,
         issue_file=arguments.issue_file,
         ocrqa=arguments.ocrqa,
-    )
-    processor.run()
-
-
-if __name__ == "__main__":
-    main()
-    log_levels = [
-        logging.CRITICAL,
-        logging.ERROR,
-        logging.WARNING,
-        logging.INFO,
-        logging.DEBUG,
-    ]
-
-    setup_logging(log_levels[arguments.verbose], arguments.logfile)
-
-    log.info("%s", arguments)
-
-    # Directly call LanguageIdentifier with relevant arguments
-    processor = LanguageIdentifier(
-        infile=arguments.infile,
-        outfile=arguments.outfile,
-        impresso_ft=arguments.impresso_ft,
-        wp_ft=arguments.wp_ft,
-        minimal_text_length=arguments.minimal_text_length,
-        lids=arguments.lids,
-        round_ndigits=arguments.round_ndigits,
-        git_describe=arguments.git_describe,
-        alphabetical_ratio_threshold=arguments.alphabetical_ratio_threshold,
-        format=arguments.format,
-        debug=arguments.debug,
-        issue_file=arguments.issue_file,
-        ocrqa=arguments.ocrqa,
+        ocrqa_repo=arguments.ocrqa_repo,
+        ocrqa_version=arguments.ocrqa_version,
     )
     processor.run()
 
