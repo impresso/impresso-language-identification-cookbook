@@ -33,3 +33,4 @@ config.local.mk
 !.idea/misc.xml
 !.idea/vcs.xml
 !.idea/inspectionProfiles/
+.aws
