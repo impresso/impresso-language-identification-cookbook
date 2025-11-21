@@ -116,7 +116,12 @@ make collection
 ### Stage 1a: Automatic Language Identification
 
 We first apply several off-the-shelf LID classifiers and our model to the
-texts. The corresponding build command is:
+texts. Additionally, OCR Quality Assessment (OCRQA) can be optionally enabled
+to evaluate the quality of the OCR text for each language. The OCRQA scores
+provide an estimate of text quality that can be used alongside language
+identification for assessing the reliability of the results.
+
+The corresponding build command is:
 
 ```sh
 make langident-target
@@ -155,6 +160,28 @@ make langident-target LANGIDENT_LID_SYSTEMS_OPTION="langid langdetect impresso_f
 ```
 
 **Recommendation**: Use the default configuration unless you have specific performance constraints or know that certain languages are not present in your data.
+
+#### Enabling OCR Quality Assessment
+
+To enable OCR quality assessment during language identification:
+
+```sh
+# Enable OCRQA with default models
+make langident-target LANGIDENT_OCRQA_OPTION="--ocrqa"
+
+# Enable OCRQA with custom Hugging Face repository
+make langident-target LANGIDENT_OCRQA_OPTION="--ocrqa" \
+    LANGIDENT_OCRQA_REPO_OPTION="impresso-project/OCR-quality-assessment-unigram"
+
+# Enable OCRQA with specific model version
+make langident-target LANGIDENT_OCRQA_OPTION="--ocrqa" \
+    LANGIDENT_OCRQA_REPO_OPTION="impresso-project/OCR-quality-assessment-unigram" \
+    LANGIDENT_OCRQA_VERSION_OPTION="v2.0.0"
+```
+
+The OCRQA scores are included in the output JSON and provide quality estimates
+for the OCR text in each language. The scores range from 0 to 1, with higher
+values indicating better estimated OCR quality.
 
 For processing a single newspaper:
 
@@ -234,8 +261,9 @@ the aggregated statistics for the entire collection and must be run sequentially
 
 ### Stage Ensemble: Deciding the language per content item
 
-Given the output from various LID systems and the original language information,
-we finally decide the language of an article according to the following rules:
+Given the output from various LID systems, the original language information,
+and optional OCRQA scores, we finally decide the language of an article
+according to the following rules:
 
 - If the overall support for the original language is below 75%, we ignore it
   completely. Otherwise, the original language is treated the same way as any
@@ -275,6 +303,11 @@ make impresso-lid-ensemble-target
 ```
 
 The process of stage 1b and ensemble is relatively fast compared to stage 1a since it processes the already-computed predictions rather than running the language identification models on raw text.
+
+**Note**: The ensemble output includes OCRQA scores (when available from stage 1a)
+in the final JSON. For each content item, the output contains the OCRQA score and
+model identifier for the decided language, which can be used to assess the
+reliability of the OCR text quality.
 
 ## Preparing the data release
 
@@ -372,3 +405,30 @@ make collection COLLECTION_JOBS=N
 
 For distributed processing across multiple machines, simply run the same command
 on each machine - the cookbook automatically coordinates work distribution.
+
+## Language Identification from Canonical Pages
+
+When we compute the language identification from canonical pages, we use the same
+pipeline as described above, but we set the flag `USE_CANONICAL=1` in
+addition to the newspaper name. This flag tells the pipeline to use the canonical
+pages as input instead of the rebuilt OCR text. The canonical pages are stored
+in a separate S3 bucket and need to be synchronized locally first. The
+synchronization is done automatically by the cookbook when the flag
+`USE_CANONICAL=1` is set.
+The canonical pages are stored in the S3 bucket defined by the variable
+`S3_BUCKET_CANONICAL`. By default, this variable is set to `112-canonical-sandbox`
+in the configuration file `configs/config-langidentocrqa_canonical-lid-ensemble_multilingual_v2-0-1.mk`.
+You can override this variable in your own configuration file.
+Assuming that $(NEWSPAPER) contains the provider level prefix, and $(NP) is the newspaper name without provider prefix,
+The path arithmetic for canonical processing is as follows:
+
+- The canonical pages of a NEWSPAPER for each YEAR are stored in the S3 bucket $(S3_BUCKET_CANONICAL)
+  under the path
+  `$(NEWSPAPER)/pages/$(NP)-$(YEAR)/$(NP)-YEAR-MM-DD-EDITION-pages.jsonl.bz2`.
+  - The local stamps for the make build refer
+    $(BUILD_DIR)/$(NEWSPAPER)/pages/$(NP)-YEAR.stamp reflect the newest
+    $(NP)-YEAR-MM-DD-EDITION-pages.jsonl.bz2 timestamp metadata on S3.
+  - The processed canonical LID output files are stored per NEWSPAPER and YEAR packages in the
+    bucket $(S3_BUCKET_CANONICAL_PROCESSED_DATA) under the path
+    `$(NEWSPAPER)/langident/RUNID/systems/$(NP)-YEAR-lid.jsonl.bz2`.
+  - In order to compute
