@@ -30,7 +30,6 @@ Example:
 
 __version__ = "2025.06.24"
 
-import copy
 import datetime
 import json
 import logging
@@ -50,6 +49,7 @@ from typing import (
     cast,
 )
 
+import jq
 import jsonschema
 import jsonschema.exceptions
 from jsonschema.protocols import Validator
@@ -59,6 +59,34 @@ import smart_open
 from impresso_cookbook import get_s3_client, get_timestamp, read_json, setup_logging
 
 log = logging.getLogger(__name__)
+
+
+FILTER = r"""
+{
+  id,
+  lg,
+  lg_decision,
+  tp,
+  len,
+  orig_lg,
+  alphabetical_ratio,
+  impresso_language_identifier_version,
+  year,
+  newspaper,
+  ts,
+
+  systems: (. | with_entries(select(.value | type=="array"))),
+
+  ocrqa: (.ocrqa[.lg].score // null),
+  bloom: (.ocrqa[.lg].model_id // null)
+}
+"""
+
+project = jq.compile(FILTER)
+
+
+def transform(item):
+    return project.input(item).first()
 
 
 class LidPrediction(TypedDict):
@@ -97,9 +125,6 @@ class ImpressoLanguageIdentifierEnsemble:
     :param str git_describe: Output of git describe to use as version if not empty
         string
 
-    :attr list attrs_per_content_item: Defines order of attributes and list of
-        attributes to copy over from stage 1 content items' JSON and nullable attributes
-        from stage 2
     :attr DefaultDict[Counter] stats: Distribution for any JSON property of interest
         (given as key)
     :attr list results: Collection of content items with their identified language.
@@ -129,78 +154,34 @@ class ImpressoLanguageIdentifierEnsemble:
 
         self.git_describe: str = git_describe
         self.diagnostics_json: Optional[str] = diagnostics_json
-
-        # Add timing and S3 client support
         self.start_time: Optional[float] = None
         self.s3_client: Any = get_s3_client()
         self.ts: str = get_timestamp()
-
-        self.lids: Set[str] = set(lid for lid in lids if lid != "orig_lg")
-
-        self.attrs_per_content_item: List[Dict[str, Any]] = (
-            [
-                {"key": "id", "required": True, "source": "language_identifier"},
-                {"key": "lg", "required": True},
-                {"key": "lg_decision", "required": False},
-                {"key": "tp", "required": True, "source": "language_identifier"},
-                {"key": "len", "required": True, "source": "language_identifier"},
-                {"key": "orig_lg", "required": True, "source": "language_identifier"},
-                {
-                    "key": "alphabetical_ratio",
-                    "required": False,
-                    "source": "language_identifier",
-                },
-                {
-                    "key": "impresso_language_identifier_version",
-                    "required": False,
-                },
-                {
-                    "key": "language_identifier_version",
-                    "required": False,
-                    "source": "language_identifier",
-                },
-                {"key": "year", "required": False},
-                {"key": "newspaper", "required": False},
-                {"key": "ts", "required": False},
-            ]
-            + [
-                {"key": k, "required": False, "source": "language_identifier"}
-                for k in sorted(self.lids)
-            ]
-            + [
-                {"key": "votes", "required": False},
-                {"key": "ocrqa", "required": False},
-                {"key": "bloom", "required": False},
-            ]
-        )
-
+        self.lids: Set[str] = lids - {"orig_lg"}
         self.infile: str = infile
-
         self.outfile: str = outfile
 
-        if len(self.lids) < 1:
+        if not self.lids:
             log.error("No LID specified. At least one language identifier needed.")
             sys.exit(2)
 
         self.weight_lb_impresso_ft: float = weight_lb_impresso_ft
-
         self.admissible_languages: Optional[Set[str]] = (
             set(admissible_languages) if admissible_languages else None
         )
-
         self.threshold_confidence_orig_lg: float = threshold_confidence_orig_lg
         self.minimal_lid_probability: float = minimal_lid_probability
         self.minimal_text_length: int = minimal_text_length
         self.minimal_voting_score: float = minimal_voting_score
         self.alphabetical_ratio_threshold: float = alphabetical_ratio_threshold or 0.0
         self.dominant_language_threshold: float = dominant_language_threshold or 0.90
-        self.exclude_lb: Set[str] = set(exclude_lb) if exclude_lb else set()
+        self.exclude_lb: Set[str] = set(exclude_lb or [])
 
         self.schema: Optional[Dict[str, Any]] = None
         self.schema_validator: Optional[Validator] = None
         self.stats: DefaultDict[str, Counter[str]] = defaultdict(Counter)
-        # Keys whose value distributions are tracked inside update_stats for diagnostics.
-        # Order matters; it defines which per-field counters are populated per result.
+        # Keys tracked inside update_stats for diagnostics.
+        # Order matters; defines which per-field counters are populated.
         self.stats_keys: List[str] = ["lg", "orig_lg", "tp", "lg_decision"]
         self.newspaper_stats: Dict[str, Any] = read_json(
             newspaper_stats_filename, self.s3_client
@@ -256,21 +237,14 @@ class ImpressoLanguageIdentifierEnsemble:
         )
         schema_file = "language_identification.schema.json"
 
-        with smart_open.open(
-            base_uri + schema_file,
-            "r",
-        ) as f:
+        with smart_open.open(base_uri + schema_file, "r") as f:
             self.schema = json.load(f)
 
         assert self.schema is not None, "Schema must be loaded before creating resolver"
 
-        resolver = jsonschema.RefResolver(
-            referrer=self.schema,
-            base_uri=base_uri,
-        )
+        resolver = jsonschema.RefResolver(referrer=self.schema, base_uri=base_uri)
         self.schema_validator = jsonschema.Draft6Validator(
-            schema=self.schema,
-            resolver=resolver,
+            schema=self.schema, resolver=resolver
         )
 
     def write_output(self) -> None:
@@ -284,12 +258,9 @@ class ImpressoLanguageIdentifierEnsemble:
         before writing.
         """
 
-        # Handle S3 transport parameters
-        if self.outfile.startswith("s3://"):
-            transport_params = {"client": self.s3_client}
-        else:
-            transport_params = {}
-
+        transport_params = (
+            {"client": self.s3_client} if self.outfile.startswith("s3://") else {}
+        )
         with smart_open.open(
             self.outfile, mode="w", encoding="utf-8", transport_params=transport_params
         ) as of:
@@ -315,12 +286,11 @@ class ImpressoLanguageIdentifierEnsemble:
         """
 
         if self.diagnostics_json:
-            # Handle S3 transport parameters
-            if self.diagnostics_json.startswith("s3://"):
-                transport_params = {"client": self.s3_client}
-            else:
-                transport_params = {}
-
+            transport_params = (
+                {"client": self.s3_client}
+                if self.diagnostics_json.startswith("s3://")
+                else {}
+            )
             with smart_open.open(
                 self.diagnostics_json,
                 mode="w",
@@ -339,85 +309,15 @@ class ImpressoLanguageIdentifierEnsemble:
         :rtype: Iterable[Dict[str, Any]]
         """
 
+        transport_params = (
+            {"client": self.s3_client} if self.infile.startswith("s3://") else {}
+        )
         with smart_open.open(
-            self.infile,
-            mode="r",
-            encoding="utf-8",
-            transport_params=(
-                {"client": self.s3_client} if self.infile.startswith("s3://") else {}
-            ),
+            self.infile, mode="r", encoding="utf-8", transport_params=transport_params
         ) as reader:
             for line in reader:
-                line = line.strip()
-                if line:
+                if line := line.strip():
                     yield json.loads(line)
-
-    def cleanup_attrs(
-        self, jinfo: Dict[str, Any], content_item: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Return copy of jinfo with ordered required attributes.
-
-        Attributes with None value that are not required are not copied over.
-        Extracts OCR QA information for the decided language if available.
-
-        :param Dict[str, Any] jinfo: Content item dictionary to clean up.
-        :param Dict[str, Any] content_item: Original content item with OCR QA data.
-        :return: Cleaned content item dictionary with ordered attributes.
-        :rtype: Dict[str, Any]
-        """
-        # Extract OCR QA info for the decided language if lg is set
-        if "lg" in jinfo and jinfo["lg"]:
-            ocrqa_score, bloom_ref = self.extract_ocrqa_for_language(
-                content_item, jinfo["lg"]
-            )
-            if ocrqa_score is not None:
-                jinfo["ocrqa"] = ocrqa_score
-            if bloom_ref is not None:
-                jinfo["bloom"] = bloom_ref
-
-        result = {}
-        for a in self.attrs_per_content_item:
-            a_key = a["key"]
-            if a.get("required"):
-                result[a_key] = jinfo.get(a_key)
-            elif jinfo.get(a_key) is not None:
-                result[a_key] = jinfo[a_key]
-        return result
-
-    def extract_ocrqa_for_language(
-        self, content_item: Dict[str, Any], language: str
-    ) -> Tuple[Optional[float], Optional[str]]:
-        """Extract OCR QA score and bloom filter reference for a given language.
-
-        :param Dict[str, Any] content_item: Content item with potential ocrqa data
-        :param str language: Language code to extract OCR QA info for
-        :return: Tuple of (ocrqa_score, bloom_reference) or (None, None)
-        :rtype: Tuple[Optional[float], Optional[str]]
-        """
-        if "ocrqa" not in content_item or not content_item["ocrqa"]:
-            return None, None
-
-        ocrqa_data = content_item["ocrqa"]
-        if not isinstance(ocrqa_data, dict) or language not in ocrqa_data:
-            return None, None
-
-        lang_ocrqa = ocrqa_data[language]
-        if not isinstance(lang_ocrqa, dict):
-            return None, None
-
-        # Extract score
-        score = lang_ocrqa.get("score")
-        if score is not None and isinstance(score, (int, float)):
-            # Ensure score is within valid range [0.0, 1.0]
-            score = max(0.0, min(1.0, float(score)))
-        else:
-            score = None
-
-        # Extract model_id and construct bloom filter reference
-        model_id = lang_ocrqa.get("model_id")
-        bloom = model_id or None
-
-        return score, bloom
 
     def get_best_lid(self, jinfo: Dict[str, Any]) -> LidPredictionMap:
         """Extract the top prediction from each LID system.
@@ -444,8 +344,7 @@ class ImpressoLanguageIdentifierEnsemble:
         filters for admissible languages, minimal probability thresholds, and boosts
         votes based on predefined confidence levels.
 
-        :param Dict[str, Any] content_item: A dictionary representing a single content item
-            with LID predictions.
+        :param Dict[str, Any] content_item: Dictionary with LID predictions.
         :return: A dictionary containing the weighted votes for each language.
         :rtype: Dict[str, float]
         """
@@ -495,9 +394,7 @@ class ImpressoLanguageIdentifierEnsemble:
                         or lang in self.admissible_languages
                     ):
                         # Check if this newspaper should exclude lb language
-                        newspaper_id = content_item["id"][
-                            0 : len(content_item["id"]) - 19
-                        ]
+                        newspaper_id = content_item["id"][:-19]
                         if lang == "lb" and newspaper_id in self.exclude_lb:
                             log.debug(
                                 "Content item %s: %s prediction of %s excluded for"
@@ -529,7 +426,7 @@ class ImpressoLanguageIdentifierEnsemble:
                             if lang_support:
                                 vote_score = prob * lang_support
 
-                                # Check if newspaper has strong dominance and this is not the dominant language
+                                # Check newspaper dominance
                                 dominant_lang = self.newspaper_stats[
                                     "dominant_language"
                                 ]
@@ -542,7 +439,7 @@ class ImpressoLanguageIdentifierEnsemble:
                                     >= self.dominant_language_threshold
                                     and lang != dominant_lang
                                 ):
-                                    # Apply penalty for non-dominant languages in highly dominant newspapers
+                                    # Penalty for non-dominant languages
                                     dominance_penalty = 1.0 - (
                                         dominant_lang_ratio
                                         - self.dominant_language_threshold
@@ -550,9 +447,9 @@ class ImpressoLanguageIdentifierEnsemble:
                                     original_score = vote_score
                                     vote_score *= dominance_penalty
                                     log.debug(
-                                        "Content item %s: Applied dominance penalty to"
-                                        " %s for %s: %s * %s = %s (dominant lang: %s,"
-                                        " ratio: %s)",
+                                        "Content item %s: Dominance penalty "
+                                        "to %s for %s: %s * %s = %s "
+                                        "(dominant: %s, ratio: %s)",
                                         content_item["id"],
                                         lid,
                                         lang,
@@ -564,8 +461,8 @@ class ImpressoLanguageIdentifierEnsemble:
                                     )
 
                             log.debug(
-                                "Content item %s: %s initial vote score for %s: %s "
-                                "(prob %s * support %s)",
+                                "Content item %s: %s initial vote score "
+                                "for %s: %s (prob %s * support %s)",
                                 content_item["id"],
                                 lid,
                                 lang,
@@ -574,13 +471,13 @@ class ImpressoLanguageIdentifierEnsemble:
                                 lang_support,
                             )
 
-                            # Apply special weight for impresso_ft predicting Luxembourgish
+                            # Apply special weight for impresso_ft and lb
                             if lid == "impresso_ft" and lang == "lb":
                                 original_score = vote_score
                                 vote_score *= self.weight_lb_impresso_ft
                                 log.debug(
-                                    "Content item %s: Applied Luxembourgish boost to"
-                                    " %s: %s * %s = %s",
+                                    "Content item %s: Luxembourgish boost "
+                                    "to %s: %s * %s = %s",
                                     content_item["id"],
                                     lid,
                                     original_score,
@@ -599,8 +496,8 @@ class ImpressoLanguageIdentifierEnsemble:
                             )
                         else:
                             log.debug(
-                                "Content item %s: %s - "
-                                "No language support for %s, vote rejected",
+                                "Content item %s: %s - No language "
+                                "support for %s, vote rejected",
                                 content_item["id"],
                                 lid,
                                 lang,
@@ -656,7 +553,8 @@ class ImpressoLanguageIdentifierEnsemble:
 
         for c in self.next_content_item():
             log.info("Processing %s", c["id"])
-            self.results.append(self.decide_lg(c))
+            transformed = transform(self.decide_lg(c))
+            self.results.append(transformed)
 
     def decide_lg(self, content_item: Dict[str, Any]) -> Dict[str, Any]:
         """Return a dict with decision information for a content item.
@@ -667,38 +565,26 @@ class ImpressoLanguageIdentifierEnsemble:
         weighted voting.
 
         :param Dict[str, Any] content_item: Content item with language predictions.
-        :return: Content item with final language decision and metadata.
+        :return: Content item enriched with final language decision and metadata.
         :rtype: Dict[str, Any]
         """
 
-        decided_content_item: Dict[str, Any] = {}
+        # Enrich the content item in place with additional metadata
+        content_id = content_item.get("id", "")
+        content_item["newspaper"] = content_id[:-19] if content_id else ""
+        content_item["year"] = content_id[-18:-14] if content_id else ""
+        content_item["ts"] = self.ts
+        content_item["impresso_language_identifier_version"] = {
+            "version": self.git_describe or __version__,
+            "ts": (
+                datetime.datetime.now(datetime.timezone.utc).isoformat(
+                    sep="T", timespec="seconds"
+                )
+            ),
+        }
 
-        # copy relevant attributes from stage 1 for each content item
-        for d in self.attrs_per_content_item:
-            if d.get("source") == "language_identifier":
-                decided_content_item[d["key"]] = copy.copy(content_item.get(d["key"]))
-
-        content_id: Optional[str] = decided_content_item.get("id")
-        decided_content_item["newspaper"] = (
-            content_id[0 : len(content_id) - 19] if content_id else ""
-        )
-        decided_content_item["year"] = content_id[-18:-14] if content_id else ""
-        decided_content_item["ts"] = self.ts
-        decided_content_item.update(
-            {
-                "impresso_language_identifier_version": {
-                    "version": self.git_describe or __version__,
-                    "ts": (
-                        datetime.datetime.now(datetime.timezone.utc).isoformat(
-                            sep="T", timespec="seconds"
-                        )
-                    ),
-                }
-            }
-        )
-
-        if decided_content_item["tp"] == "img":
-            return self.cleanup_attrs(decided_content_item, content_item)
+        if content_item["tp"] == "img":
+            return content_item
 
         trust_orig_lg = False
         if overall_orig_lg_support := self.newspaper_stats.get(
@@ -725,9 +611,8 @@ class ImpressoLanguageIdentifierEnsemble:
         # rule 1: ignore original language information when not trustworthy
         if not trust_orig_lg or not content_item.get("orig_lg"):
             log.debug(
-                "Content item %s: Rule 1 - "
-                "Ignoring original language (trust_orig_lg: %s, "
-                "orig_lg present: %s)",
+                "Content item %s: Rule 1 - Ignoring original language "
+                "(trust_orig_lg: %s, orig_lg present: %s)",
                 content_item["id"],
                 trust_orig_lg,
                 bool(content_item.get("orig_lg")),
@@ -735,12 +620,10 @@ class ImpressoLanguageIdentifierEnsemble:
             content_item["orig_lg"] = None
             self.lids.discard("orig_lg")
         else:
-            # set confidence value of original language information as probability
-            # the original probability was always 1 before
-            orig_lg_support = self.newspaper_stats["lg_support"]["orig_lg"].get(
-                content_item["orig_lg"], 0.00001
-            )
             original_lang = cast(str, content_item["orig_lg"])
+            orig_lg_support = self.newspaper_stats["lg_support"]["orig_lg"].get(
+                original_lang, 0.00001
+            )
             log.debug(
                 "Content item %s: Rule 1 - Using original language %s with support %s",
                 content_item["id"],
@@ -774,9 +657,9 @@ class ImpressoLanguageIdentifierEnsemble:
                 content_item["id"],
                 decided_language,
             )
-            decided_content_item["lg"] = decided_language
-            decided_content_item["lg_decision"] = "all"
-            return self.cleanup_attrs(decided_content_item, content_item)
+            content_item["lg"] = decided_language
+            content_item["lg_decision"] = "all"
+            return content_item
 
         all_but_impresso_ft_lid_languages = set(
             str(all_lid_preds[lid]["lang"])
@@ -786,9 +669,7 @@ class ImpressoLanguageIdentifierEnsemble:
 
         # rule 2b: off-the-shelf LID agree on language other than DE or FR
         if len(all_but_impresso_ft_lid_languages) == 1:
-            other_lg: str = next(
-                iter(all_but_impresso_ft_lid_languages)
-            )  # More explicit than min()
+            other_lg = next(iter(all_but_impresso_ft_lid_languages))
             log.debug(
                 "Content item %s: Rule 2b - All non-impresso_ft systems agree on: %s",
                 content_item["id"],
@@ -805,12 +686,9 @@ class ImpressoLanguageIdentifierEnsemble:
             is_non_major_language = other_lg not in {"de", "fr", "en", "it"}
 
             log.debug(
-                "Content item %s: Rule 2b conditions - non-major"
-                " language: %s, in ensemble distribution:"
-                " %s, text length sufficient:"
-                " %s (len=%s,"
-                " alpha_ratio=%s,"
-                " threshold=%s)",
+                "Content item %s: Rule 2b conditions - non-major language: %s, "
+                "in ensemble distribution: %s, text length sufficient: %s "
+                "(len=%s, alpha_ratio=%s, threshold=%s)",
                 content_item["id"],
                 is_non_major_language,
                 in_ensemble_distribution,
@@ -830,9 +708,9 @@ class ImpressoLanguageIdentifierEnsemble:
                     content_item["id"],
                     other_lg,
                 )
-                decided_content_item["lg"] = other_lg
-                decided_content_item["lg_decision"] = "all-but-impresso_ft"
-                return self.cleanup_attrs(decided_content_item, content_item)
+                content_item["lg"] = other_lg
+                content_item["lg_decision"] = "all-but-impresso_ft"
+                return content_item
             else:
                 log.debug(
                     "Content item %s: Rule 2b rejected for %s",
@@ -841,7 +719,7 @@ class ImpressoLanguageIdentifierEnsemble:
                 )
 
         # rule 2c: set dominant language of newspaper for very short articles
-        text_len: int = decided_content_item.get("len", 0)
+        text_len: int = content_item.get("len", 0)
         if text_len and text_len < self.minimal_text_length:
             log.debug(
                 "Content item %s: Rule 2c - Text too short"
@@ -852,22 +730,22 @@ class ImpressoLanguageIdentifierEnsemble:
                 self.minimal_text_length,
                 dominant_lg,
             )
-            decided_content_item["lg"] = dominant_lg
-            decided_content_item["lg_decision"] = "dominant-by-len"
-            return self.cleanup_attrs(decided_content_item, content_item)
+            content_item["lg"] = dominant_lg
+            content_item["lg_decision"] = "dominant-by-len"
+            return content_item
 
         votes: Dict[str, float] = self.get_votes(content_item)
         sorted_votes: List[Tuple[str, float]] = sorted(
             votes.items(), key=lambda item: item[1], reverse=True
         )
-        decided_content_item["votes"] = [
+        content_item["votes"] = [
             {"lang": lang, "vote": round(score, 3)} for lang, score in sorted_votes
         ]
 
         log.debug(
             "Content item %s: Vote results: %s",
             content_item["id"],
-            decided_content_item["votes"],
+            content_item["votes"],
         )
 
         if not sorted_votes:
@@ -876,9 +754,9 @@ class ImpressoLanguageIdentifierEnsemble:
                 content_item["id"],
                 dominant_lg,
             )
-            decided_content_item["lg"] = dominant_lg
-            decided_content_item["lg_decision"] = "dominant-by-lowvote"
-            return self.cleanup_attrs(decided_content_item, content_item)
+            content_item["lg"] = dominant_lg
+            content_item["lg_decision"] = "dominant-by-lowvote"
+            return content_item
 
         best_vote_score: float = sorted_votes[0][1]
         if best_vote_score < self.minimal_voting_score:
@@ -891,9 +769,9 @@ class ImpressoLanguageIdentifierEnsemble:
                 self.minimal_voting_score,
                 dominant_lg,
             )
-            decided_content_item["lg"] = dominant_lg
-            decided_content_item["lg_decision"] = "dominant-by-lowvote"
-            return self.cleanup_attrs(decided_content_item, content_item)
+            content_item["lg"] = dominant_lg
+            content_item["lg_decision"] = "dominant-by-lowvote"
+            return content_item
 
         # rule 3: get decision by ensemble voting for less obvious cases
         winning_language: str = sorted_votes[0][0]
@@ -903,9 +781,9 @@ class ImpressoLanguageIdentifierEnsemble:
             winning_language,
             best_vote_score,
         )
-        decided_content_item["lg"] = winning_language
-        decided_content_item["lg_decision"] = "voting"
-        return self.cleanup_attrs(decided_content_item, content_item)
+        content_item["lg"] = winning_language
+        content_item["lg_decision"] = "voting"
+        return content_item
 
     def update_stats(self) -> None:
         """Update per-newspaper statistics for diagnostics.
