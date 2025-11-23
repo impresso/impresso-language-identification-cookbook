@@ -1,7 +1,7 @@
 {
     "_meta": {
         "hash": {
-            "sha256": "8a741d3c80d5b97d34df40134a18e206615a85af4e884fe90b233e1b7d0c293e"
+            "sha256": "980d531ed0322cf7dccebc3e4e99599803620a785ebe9ce222de12f775a8bee7"
         },
         "pipfile-spec": 6,
         "requires": {
@@ -596,11 +596,11 @@
         },
         "huggingface-hub": {
             "hashes": [
-                "sha256:867799fbd2ef338b7f8b03d038d9c0e09415dfe45bb2893b48a510d1d746daa5",
-                "sha256:a7424a766fffa1a11e4c1ac2040a1557e2101f86050fdf06627e7b74cc9d2ad6"
+                "sha256:40ba5c9a08792d888fde6088920a0a71ab3cd9d5e6617c81a797c657f1fd9968",
+                "sha256:e88ecc129011f37b868586bbcfae6c56868cae80cd56a79d61575426a3aa0d7d"
             ],
             "markers": "python_full_version >= '3.9.0'",
-            "version": "==1.1.4"
+            "version": "==1.1.5"
         },
         "idna": {
             "hashes": [
