@@ -17,7 +17,7 @@ lingua-language-detector = "*"
 jsonschema = ">=4.17.0,<5"
 types-jsonschema = "*"
 impresso-cookbook = {file = "cookbook/lib", editable = true}
-impresso-pipelines = {git = "https://github.com/impresso/impresso-pipelines.git", version= "~=0.5",ref = "simplifiedv2", extras = ["langident","ocrqa"]}
+impresso-pipelines = {git = "https://github.com/impresso/impresso-pipelines.git", ref = "simplifiedv2", extras = ["langident","ocrqa"]}
 aws2 = "*"
 
 [requires]
