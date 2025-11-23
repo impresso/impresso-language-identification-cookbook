@@ -624,7 +624,7 @@ class AggregatorLID:
                 self.lid_distributions[lid], n=self.n, ndigits=self.round_ndigits
             )
 
-        ensemble_distribution = self.lid_distributions["ensemble"]
+        ensemble_distribution: FrequencyMapping = self.lid_distributions["ensemble"]
         self.dominant_language = (
             max(ensemble_distribution, key=ensemble_distribution.get)
             if ensemble_distribution
