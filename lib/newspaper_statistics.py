@@ -21,6 +21,9 @@ Key features:
 - S3 and local file support for input
 - Comprehensive logging and statistical reporting
 
+Type Safety:
+- Provides typed aliases for content items to facilitate static analysis across downstream tools.
+
 Ensemble Decision Rules:
 - Content items with less than 200 non-letter characters are ignored by default
 - Content items with alphabetical ratio < 0.5 are ignored
@@ -74,48 +77,77 @@ Example usage:
     aggregator.run()
 """
 
-__version__ = "2025.06.24"
+__version__ = "2025.10.10"
 
 import json
 import logging
 import time
 import re
+import sys
+
 from collections import Counter, defaultdict
-from typing import Optional, Set, Iterable, List, Generator
+from typing import (
+    Any,
+    DefaultDict,
+    Dict,
+    Generator,
+    List,
+    MutableMapping,
+    Optional,
+    Set,
+    Tuple,
+    TextIO,
+)
 
 import smart_open
 
-from impresso_cookbook import get_s3_client, get_timestamp
-from impresso_cookbook import yield_s3_objects
+
+from impresso_cookbook import (
+    get_s3_client,
+    get_timestamp,
+    setup_logging,
+    yield_s3_objects,
+)
 
 log = logging.getLogger(__name__)
 
+ContentItem = Dict[str, Any]
+Language = str
+LIDName = str
+VoteScore = float
+VoteRecord = Tuple[LIDName, VoteScore]
+VotesByLanguage = DefaultDict[Language, List[VoteRecord]]
+VoteTally = Dict[Language, VoteScore]
+FrequencyMapping = DefaultDict[Language, float]
 
-def update_relfreq(counter: Counter, n: Optional[int] = None, ndigits: int = 3) -> None:
-    """Compute relative frequency of the language distribution.
 
-    :param Counter counter: Some frequency distribution.
-    :param Optional[int] n: Total of counts if given.
-    :param int ndigits: Round floats to n digits.
-    :return: None.
-    :rtype: None
+def update_relfreq(
+    counter: MutableMapping[Language, float],
+    n: Optional[int] = None,
+    ndigits: int = 3,
+) -> None:
+    """Normalize a language frequency distribution in-place.
 
+    Args:
+        counter: Mutable frequency distribution keyed by language.
+        n: Optional total count to reuse instead of recomputing.
+        ndigits: Number of decimal places used for rounding ratios.
     """
-
-    if n is None:
-        n = sum(counter.values())
-    for lang in counter:
-        counter[lang] = round(counter[lang] / n, ndigits)
+    total = float(sum(counter.values())) if n is None else float(n)
+    if total == 0.0:
+        return
+    for lang in list(counter.keys()):
+        counter[lang] = round(float(counter[lang]) / total, ndigits)
 
 
 def expand_s3_prefix(s3_path: str) -> List[str]:
-    """Expand an S3 prefix to a list of matching file paths.
+    """Expand an S3 prefix into all matching JSONL resources.
 
     Args:
-        s3_path (str): S3 path in format s3://bucket/prefix
+        s3_path: Fully qualified S3 URI (``s3://bucket/prefix``).
 
     Returns:
-        List[str]: List of full S3 paths matching the prefix
+        List[str]: JSONL object keys under the provided prefix.
     """
     match = re.match(r"s3://([^/]+)/(.+)", s3_path)
     if not match:
@@ -131,6 +163,21 @@ def expand_s3_prefix(s3_path: str) -> List[str]:
 
     log.info("Found %d matching files for prefix %s", len(files), s3_path)
     return files
+
+
+def extract_prediction(predictions: Any) -> Optional[Tuple[Language, Optional[float]]]:
+    """Return the leading (language, probability) pair from a prediction list."""
+    if isinstance(predictions, list) and predictions:
+        first = predictions[0]
+        if isinstance(first, dict):
+            lang_value = first.get("lang")
+            prob_value = first.get("prob")
+            if isinstance(lang_value, str):
+                prob_float: Optional[float] = None
+                if isinstance(prob_value, (int, float)):
+                    prob_float = float(prob_value)
+                return lang_value, prob_float
+    return None
 
 
 class AggregatorLID:
@@ -183,7 +230,7 @@ class AggregatorLID:
     def __init__(
         self,
         infile: List[str],
-        newspaper: str,
+        newspaper: Optional[str],
         lids: Set[str],
         boosted_lids: Set[str],
         boost_factor: float,
@@ -195,7 +242,7 @@ class AggregatorLID:
         git_describe: str,
         outfile: Optional[str] = None,
     ):
-        self.attrs_for_json: list = [
+        self.attrs_for_json: List[str] = [
             # configured information
             "newspaper",
             "lids",
@@ -216,11 +263,10 @@ class AggregatorLID:
             "ts",  # Add timestamp at top level
             "aggregator_lid",
         ]
-        self.output = (
+        self.output: Optional[TextIO] = (
             smart_open.open(outfile, mode="w", encoding="utf-8") if outfile else None
         )
-        # Add timing and logging attributes like in language_identification.py
-        self.start_time = None
+        self.start_time: Optional[float] = None
         self.s3_client = get_s3_client()
         self.ts = get_timestamp()
 
@@ -243,7 +289,7 @@ class AggregatorLID:
         self.infile: List[str] = expanded_files
         log.info("Processing %d input files", len(self.infile))
 
-        self.newspaper: str = newspaper
+        self.newspaper: Optional[str] = newspaper
 
         self.lids: Set[str] = set(lid for lid in lids if lid != "orig_lg")
 
@@ -286,12 +332,12 @@ class AggregatorLID:
 
         self.dominant_language: Optional[str] = None
 
-        self.lg_support: dict = {
-            lid: Counter() for lid in self.lids.union(("orig_lg",))
+        self.lg_support: Dict[str, DefaultDict[Language, float]] = {
+            lid: defaultdict(float) for lid in self.lids.union(("orig_lg",))
         }
 
-        self.lid_distributions: dict = {
-            lid: Counter() for lid in self.lids.union(("orig_lg", "ensemble"))
+        self.lid_distributions: Dict[str, FrequencyMapping] = {
+            lid: defaultdict(float) for lid in self.lids.union(("orig_lg", "ensemble"))
         }
 
         # Absolute counts for each LID system before conversion to relative frequencies
@@ -307,8 +353,8 @@ class AggregatorLID:
         self.orig_lg_ensemble_disagreements: Counter = Counter()
         self.orig_lg_total_decisions: int = 0
 
-    def run(self):
-        """Run the application"""
+    def run(self) -> None:
+        """Execute the aggregation workflow and emit the final JSON payload."""
         self.start_time = time.time()
 
         log.info(
@@ -323,146 +369,142 @@ class AggregatorLID:
 
         print(
             json.dumps(json_data, ensure_ascii=False),
-            file=self.output,
+            file=self.output if self.output is not None else sys.stdout,
         )
 
-        # Log compute time
+        if self.start_time is None:
+            raise RuntimeError("Aggregation timer was not initialized.")
         total_time = time.time() - self.start_time
         log.info(
             "Language statistics aggregation finished in %.2f seconds.", total_time
         )
 
-    def get_next_contentitem(self) -> Iterable[dict]:
-        """Yield each content items.
+    def get_next_contentitem(self) -> Generator[ContentItem, None, None]:
+        """Yield parsed content items from all configured sources.
 
-        :return: Iterator over content items.
-        :rtype: Iterable[dict]
-
+        Yields:
+            ContentItem: Single JSONL record with LID predictions.
         """
-
         for input_file in self.infile:
-            # Handle S3 transport parameters like in language_identification.py
+            # Handle S3 transport parameters like in impresso_langident_systems.py
             if input_file.startswith("s3://"):
                 transport_params = {"client": self.s3_client}
             else:
                 transport_params = {}
 
-            with smart_open.open(
-                input_file, transport_params=transport_params, encoding="utf-8"
-            ) as reader:
-                for line in reader:
-                    if line.strip():
-                        contentitem = json.loads(line)
-                        yield contentitem
+            try:
+                log.info("Processing file: %s", input_file)
+                with smart_open.open(
+                    input_file, transport_params=transport_params, encoding="utf-8"
+                ) as reader:
+                    line_count = 0
+                    for line in reader:
+                        line_count += 1
+                        if line.strip():
+                            try:
+                                contentitem = json.loads(line)
+                                yield contentitem
+                            except json.JSONDecodeError as e:
+                                log.error(
+                                    "JSON decode error in file %s at line %d: %s",
+                                    input_file,
+                                    line_count,
+                                    e,
+                                )
+                                raise
+                log.info(
+                    "Successfully processed %d lines from %s", line_count, input_file
+                )
+            except OSError as e:
+                log.error(
+                    "Failed to read file %s: %s. "
+                    "The file may be corrupted or incomplete.",
+                    input_file,
+                    e,
+                )
+                raise RuntimeError(
+                    f"Cannot process file {input_file}: {e}. "
+                    "The file may be corrupted, incomplete, or in an invalid format."
+                ) from e
+            except Exception as e:
+                log.error(
+                    "Unexpected error while processing file %s: %s",
+                    input_file,
+                    e,
+                )
+                raise
 
-    def update_lid_distributions(self, content_item: dict) -> None:
-        """Update the self.lid_distribution statistics.
-
-        The statistics covers all LID systems as well as orig_lg.
-        The ensemble predictions are not computed here.
-
-
-        :param dict content_item: A single content item.
-        :return: None.
-        :rtype: None
-
-        """
-
-        # update stats for all regular LID systems
+    def update_lid_distributions(self, content_item: ContentItem) -> None:
+        """Record absolute counts for each LID system given one item."""
         for lid in self.lids:
-            if (
-                lid in content_item
-                and content_item[lid] is not None
-                and len(content_item[lid]) > 0
-            ):
-                lang = content_item[lid][0]["lang"]
-                self.lid_distributions[lid][lang] += 1
+            prediction = extract_prediction(content_item.get(lid))
+            if prediction:
+                lang, _ = prediction
+                self.lid_distributions[lid][lang] += 1.0
                 self.lid_absolute_counts[lid][lang] += 1
 
-        # update stats for orig_lg
         orig_lg = content_item.get("orig_lg")
-        if orig_lg:
-            self.lid_distributions["orig_lg"][orig_lg] += 1
+        if isinstance(orig_lg, str) and orig_lg:
+            self.lid_distributions["orig_lg"][orig_lg] += 1.0
             self.lid_absolute_counts["orig_lg"][orig_lg] += 1
 
-    def get_votes(self, content_item: dict) -> Optional[Counter]:
-        """Return ensemble votes per language after boosting.
+    def get_votes(self, content_item: ContentItem) -> Optional[VoteTally]:
+        """Compute boosted ensemble votes for a content item.
 
-        :param dict content_item: A single content item.
-        :return: Distribution of votes of the ensemble system.
-        :rtype: Optional[Counter]
+        Args:
+            content_item: LID predictions and metadata for one item.
 
+        Returns:
+            Optional[VoteTally]: Normalized vote totals or ``None`` when no decision is possible.
         """
+        votes: VotesByLanguage = defaultdict(list)
 
-        # for each language key we have a list of tuples (LID, vote_score)
-        votes = defaultdict(list)
-
-        if content_item.get("orig_lg"):
-            votes[content_item.get("orig_lg")].append(
+        orig_lg = content_item.get("orig_lg")
+        if isinstance(orig_lg, str) and orig_lg:
+            votes[orig_lg].append(
                 (
                     "orig_lg",
-                    (1 if "orig_lg" not in self.boosted_lids else self.boost_factor),
+                    self.boost_factor if "orig_lg" in self.boosted_lids else 1.0,
                 )
             )
+
         for lid in self.lids:
+            prediction = extract_prediction(content_item.get(lid))
+            if not prediction:
+                continue
+            lang, prob = prediction
             if (
-                lid in content_item
-                and content_item[lid] is not None
-                and len(content_item[lid]) > 0
+                self.admissible_languages is not None
+                and lang not in self.admissible_languages
             ):
-                lang, prob = (
-                    content_item.get(lid)[0]["lang"],
-                    content_item.get(lid)[0]["prob"],
-                )
-                if (
-                    self.admissible_languages is None
-                    or lang in self.admissible_languages
-                ):
-                    if prob >= self.minimal_lid_probability:
-                        votes[lang].append(
-                            (
-                                lid,
-                                (
-                                    1
-                                    if lid not in self.boosted_lids
-                                    else self.boost_factor
-                                ),
-                            )
-                        )
-
-        # for each language key we have a voting score across systems
-        # consider boost for a particular language only when at least another system supports prediction
-        decision = Counter()
-        for lang, votes_lang in votes.items():
-            decision[lang] = sum(
-                (boost if len(votes_lang) > 1 else 1) for (_, boost) in votes_lang
+                continue
+            if prob is None or prob < self.minimal_lid_probability:
+                continue
+            votes[lang].append(
+                (lid, self.boost_factor if lid in self.boosted_lids else 1.0)
             )
-            # ignore predictions a score below the threshold after boosting
-            if decision[lang] < self.minimal_vote_score:
-                del decision[lang]
 
+        decision: VoteTally = {}
+        for lang, votes_lang in votes.items():
+            support_count = len(votes_lang)
+            total_score = sum(
+                vote_score if support_count > 1 else 1.0 for _, vote_score in votes_lang
+            )
+            if total_score >= self.minimal_vote_score:
+                decision[lang] = total_score
+
+        votes_snapshot = {lg: list(records) for lg, records in votes.items()}
         log.debug(
-            f"Decisions: {decision if len(decision) > 0 else None} "
-            f"votes = {dict(votes)} decision-distro {decision} decision = "
-            f"content_item ={content_item}"
+            "Decisions: %s votes=%s content_item=%s",
+            decision if decision else None,
+            votes_snapshot,
+            content_item,
         )
 
-        if len(decision) < 1:  # no decision taken
-            return None
-
-        return decision
+        return decision or None
 
     def collect_statistics(self) -> None:
-        """Collect and update statistics in self.
-
-        The following statistics are updated for a newspaper:
-        - self.content_item_type_distribution
-        - self.content_length_stats
-        - self.lid_distributions
-        - self.n
-        - self.lg_support
-        """
-
+        """Accumulate aggregate metrics across all content items."""
         for ci in self.get_next_contentitem():
 
             # we can infer the newspaper name from impresso content item naming schema
@@ -476,22 +518,25 @@ class AggregatorLID:
                 )
 
             # update content type statistics
-            self.contentitem_type_distribution[ci.get("tp")] += 1
+            content_type = ci.get("tp")
+            if isinstance(content_type, str):
+                self.contentitem_type_distribution[content_type] += 1
+            else:
+                self.contentitem_type_distribution["unknown"] += 1
 
-            # ignore images
-            if ci["tp"] == "img":
+            if content_type == "img":
                 continue
 
-            # update statistics on content item length and ignore very short items
-            ci_len = ci.get("len", 0)
+            ci_len_value = ci.get("len", 0)
+            ci_len = ci_len_value if isinstance(ci_len_value, int) else 0
             self.content_length_stats[ci_len] += 1
-            if (
-                (a_ratio := ci.get("alphabetical_ratio", 0)) < 0.5
-            ) or ci_len * a_ratio < self.minimal_text_length:
-                log.debug(
-                    f"Ignore short content item: {ci['id']}\t(length:"
-                    f" {ci.get('len', 0)})"
-                )
+
+            a_ratio_value = ci.get("alphabetical_ratio", 0)
+            a_ratio = (
+                float(a_ratio_value) if isinstance(a_ratio_value, (int, float)) else 0.0
+            )
+            if (a_ratio < 0.5) or ci_len * a_ratio < self.minimal_text_length:
+                log.debug(f"Ignore short content item: {ci['id']}\t(length: {ci_len})")
                 continue
 
             # update counter for content item with textual content
@@ -503,39 +548,40 @@ class AggregatorLID:
             # compute the ensemble voting decision (if any)
             decision = self.get_votes(ci)
 
-            if decision is None:
-                lang = None
-            else:
-                lang, score = decision.most_common(1)[0]
-                log.debug(f"Decision taken: lang={lang} score={score}")
-                if len(decision) > 1 and decision.most_common(2)[1][1] == score:
+            lang: Optional[Language] = None
+            if decision:
+                best_lang, best_score = max(decision.items(), key=lambda item: item[1])
+                has_tie = any(
+                    abs(candidate_score - best_score) < 1e-9
+                    and candidate_lang != best_lang
+                    for candidate_lang, candidate_score in decision.items()
+                )
+                if has_tie:
                     log.warning(
                         f"Ignore decision for {ci['id']} as there is a tie between the"
                         f" two top predicted languages {decision}"
                     )
-                    lang = None
+                else:
+                    lang = best_lang
+                    log.debug(f"Decision taken: lang={lang} score={best_score}")
 
-            # update the ensemble statistics
             if lang is not None:
-                self.lid_distributions["ensemble"][lang] += 1
+                self.lid_distributions["ensemble"][lang] += 1.0
                 self.lid_absolute_counts["ensemble"][lang] += 1
 
-            # update the statistics on the support of the ensemble prediction for individual LID predictions
             for lid in self.lids:
-                lid_lg_info = ci.get(lid)
-                if lid_lg_info and len(lid_lg_info) > 0:
-                    lid_lg = lid_lg_info[0]["lang"]
-                    if lid_lg == lang:
-                        self.lg_support[lid][lang] += 1
+                lid_prediction = extract_prediction(ci.get(lid))
+                if lid_prediction and lang is not None:
+                    lid_lang, _ = lid_prediction
+                    if lid_lang == lang:
+                        self.lg_support[lid][lid_lang] += 1.0
 
-            # update the orig_lg support statistics
             orig_lg = ci.get("orig_lg")
-            if orig_lg:
+            if isinstance(orig_lg, str) and orig_lg:
                 self.orig_lg_total_decisions += 1
                 if lang == orig_lg:
-                    self.lg_support["orig_lg"][lang] += 1
+                    self.lg_support["orig_lg"][orig_lg] += 1.0
                 elif lang is not None:
-                    # Log disagreement between orig_lg and ensemble
                     self.orig_lg_ensemble_disagreements[f"{orig_lg}->{lang}"] += 1
                     log.debug(
                         "Disagreement in %s: orig_lg=%s, ensemble=%s",
@@ -545,26 +591,18 @@ class AggregatorLID:
                     )
 
     def compute_support(self) -> None:
-        """Update the support statistics with relative frequencies
-
-        The support statistics asses the confidence of a classifier and
-        the metadata `orig_lg` for predicting a particular language.
-
-        The following statistics are updated for a newspaper:
-        - self.lg_support
-        """
+        """Convert raw counters into relative support metrics."""
 
         # Do this before the relative frequencies has been computed
         try:
-            orig_lg_n = sum(
-                count
-                for (lang, count) in self.lid_distributions["orig_lg"].items()
-                if lang is not None
-            )
-            self.overall_orig_lg_support = round(
-                sum(self.lg_support["orig_lg"].values()) / orig_lg_n,
-                self.round_ndigits,
-            )
+            orig_lg_n = sum(self.lid_distributions["orig_lg"].values())
+            if orig_lg_n > 0.0:
+                self.overall_orig_lg_support = round(
+                    sum(self.lg_support["orig_lg"].values()) / orig_lg_n,
+                    self.round_ndigits,
+                )
+            else:
+                self.overall_orig_lg_support = None
         except ZeroDivisionError:
             self.overall_orig_lg_support = None
 
@@ -576,7 +614,8 @@ class AggregatorLID:
             # turn support distributions into relative frequencies
             for lang in self.lg_support[lid]:
                 self.lg_support[lid][lang] = round(
-                    self.lg_support[lid][lang] / self.lid_distributions[lid][lang],
+                    self.lg_support[lid][lang]
+                    / max(self.lid_distributions[lid][lang], 1e-12),
                     self.round_ndigits,
                 )
 
@@ -585,7 +624,12 @@ class AggregatorLID:
                 self.lid_distributions[lid], n=self.n, ndigits=self.round_ndigits
             )
 
-        self.dominant_language = self.lid_distributions["ensemble"].most_common(1)[0][0]
+        ensemble_distribution = self.lid_distributions["ensemble"]
+        self.dominant_language = (
+            max(ensemble_distribution, key=ensemble_distribution.get)
+            if ensemble_distribution
+            else None
+        )
 
         # Log disagreement statistics
         if self.orig_lg_ensemble_disagreements:
@@ -598,14 +642,8 @@ class AggregatorLID:
                 dict(self.orig_lg_ensemble_disagreements.most_common(5)),
             )
 
-    def jsonify(self) -> dict:
-        """Return JSON representation of relevant statistics.
-
-        :return: Statistcs covering all LID system.
-        :rtype: dict
-
-        """
-
+    def jsonify(self) -> Dict[str, Any]:
+        """Serialize the collected statistics into a JSON-safe dict."""
         json_data = {}
 
         for attr in self.attrs_for_json:
@@ -616,42 +654,24 @@ class AggregatorLID:
         return json_data
 
 
-def setup_logging(log_level: int, log_file: Optional[str]) -> None:
-    """Configure logging."""
-
-    class SmartFileHandler(logging.FileHandler):
-        def _open(self):
-            return smart_open.open(self.baseFilename, self.mode, encoding="utf-8")
-
-    handlers = [logging.StreamHandler()]
-    if log_file:
-        handlers.append(SmartFileHandler(log_file, mode="w"))
-
-    logging.basicConfig(
-        level=log_level,
-        format="%(asctime)-15s %(filename)s:%(lineno)d %(levelname)s: %(message)s",
-        handlers=handlers,
-        force=True,
-    )
-
-
 def main():
     import argparse
 
     DESCRIPTION = "Aggregate language-related statistics on content items."
 
     parser = argparse.ArgumentParser(description=DESCRIPTION)
-    parser.add_argument("-l", "--logfile", help="write log to FILE", metavar="FILE")
     parser.add_argument(
-        "-v",
-        "--verbose",
-        default=3,
-        type=int,
-        metavar="LEVEL",
-        help=(
-            "set verbosity level: 0=CRITICAL, 1=ERROR, 2=WARNING, 3=INFO 4=DEBUG"
-            " (default %(default)s)"
-        ),
+        "-l",
+        "--log-file",
+        dest="log_file",
+        help="Write log to FILE",
+        metavar="FILE",
+    )
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="Logging level (default: %(default)s)",
     )
     parser.add_argument(
         "--newspaper",
@@ -783,19 +803,10 @@ def main():
 
     arguments = parser.parse_args()
 
-    log_levels = [
-        logging.CRITICAL,
-        logging.ERROR,
-        logging.WARNING,
-        logging.INFO,
-        logging.DEBUG,
-    ]
-
-    setup_logging(log_levels[arguments.verbose], arguments.logfile)
+    setup_logging(arguments.log_level, arguments.log_file, logger=log)
 
     log.info("%s", arguments)
 
-    # Create AggregatorLID instance directly with all arguments
     aggregator = AggregatorLID(
         infile=arguments.infile,
         newspaper=arguments.newspaper,

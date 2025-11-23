@@ -32,7 +32,7 @@ a three-step approach:
    and assess the confidence of a classifier by comparing against the ensemble
    decision (stage 1b)
 3. predict the final language of an article following a rule-based approach and
-   ensemble voting (stage 2)
+   ensemble voting (ensemble stage)
 
 For our model `impresso_ft`, we selected and trained specifically on items where
 the original language was different from the predicted languages, and on
@@ -116,18 +116,31 @@ make collection
 ### Stage 1a: Automatic Language Identification
 
 We first apply several off-the-shelf LID classifiers and our model to the
-texts. The corresponding build command is:
+texts. Additionally, OCR Quality Assessment (OCRQA) can be optionally enabled
+to evaluate the quality of the OCR text for each language. The OCRQA scores
+provide an estimate of text quality that can be used alongside language
+identification for assessing the reliability of the results.
+
+The corresponding build command is:
 
 ```sh
 make langident-target
 ```
 
-This command runs all three stages (1a, 1b, and 2) in sequence. To run individual stages:
+This command runs all three stages (1a, 1b, and ensemble) in sequence. To run individual stages:
 
 ```sh
 make impresso-lid-stage1a-target  # Initial LID predictions only
 make impresso-lid-stage1b-target  # Collection statistics only
-make impresso-lid-stage2-target   # Final ensemble decisions only
+make impresso-lid-ensemble-target # Final ensemble decisions only
+```
+
+# To use the new script name in any documentation that mentions the specific script:
+
+```sh
+# Stage 1a uses impresso_langident_systems.py
+# Stage 1b uses newspaper_statistics.py
+# Ensemble uses impresso_ensemble_lid.py
 ```
 
 ### Available Language Identification Systems
@@ -147,6 +160,28 @@ make langident-target LANGIDENT_LID_SYSTEMS_OPTION="langid langdetect impresso_f
 ```
 
 **Recommendation**: Use the default configuration unless you have specific performance constraints or know that certain languages are not present in your data.
+
+#### Enabling OCR Quality Assessment
+
+To enable OCR quality assessment during language identification:
+
+```sh
+# Enable OCRQA with default models
+make langident-target LANGIDENT_OCRQA_OPTION="--ocrqa"
+
+# Enable OCRQA with custom Hugging Face repository
+make langident-target LANGIDENT_OCRQA_OPTION="--ocrqa" \
+    LANGIDENT_OCRQA_REPO_OPTION="impresso-project/OCR-quality-assessment-unigram"
+
+# Enable OCRQA with specific model version
+make langident-target LANGIDENT_OCRQA_OPTION="--ocrqa" \
+    LANGIDENT_OCRQA_REPO_OPTION="impresso-project/OCR-quality-assessment-unigram" \
+    LANGIDENT_OCRQA_VERSION_OPTION="v2.0.0"
+```
+
+The OCRQA scores are included in the output JSON and provide quality estimates
+for the OCR text in each language. The scores range from 0 to 1, with higher
+values indicating better estimated OCR quality.
 
 For processing a single newspaper:
 
@@ -224,10 +259,11 @@ make impresso-lid-stage1b-target
 This command can only be run after stage 1a has been completed. It processes
 the aggregated statistics for the entire collection and must be run sequentially.
 
-### Stage 2: Deciding the language per content item
+### Stage Ensemble: Deciding the language per content item
 
-Given the output from various LID systems and the original language information,
-we finally decide the language of an article according to the following rules:
+Given the output from various LID systems, the original language information,
+and optional OCRQA scores, we finally decide the language of an article
+according to the following rules:
 
 - If the overall support for the original language is below 75%, we ignore it
   completely. Otherwise, the original language is treated the same way as any
@@ -263,10 +299,15 @@ we finally decide the language of an article according to the following rules:
 To perform this stage, run the following command:
 
 ```sh
-make impresso-lid-stage2-target
+make impresso-lid-ensemble-target
 ```
 
-The process of stage 1b and 2 is relatively fast compared to stage 1a since it processes the already-computed predictions rather than running the language identification models on raw text.
+The process of stage 1b and ensemble is relatively fast compared to stage 1a since it processes the already-computed predictions rather than running the language identification models on raw text.
+
+**Note**: The ensemble output includes OCRQA scores (when available from stage 1a)
+in the final JSON. For each content item, the output contains the OCRQA score and
+model identifier for the decided language, which can be used to assess the
+reliability of the OCR text quality.
 
 ## Preparing the data release
 
@@ -290,7 +331,7 @@ make impresso-lid-upload-release-to-s3
 
 ## Creating LID statistics
 
-During stage 2, diagnostics files in JSON format are produced for each collection
+During the ensemble stage, diagnostics files in JSON format are produced for each collection
 that aggregate information from the individual content item files. These statistics
 can be aggregated across the entire collection:
 
@@ -364,3 +405,30 @@ make collection COLLECTION_JOBS=N
 
 For distributed processing across multiple machines, simply run the same command
 on each machine - the cookbook automatically coordinates work distribution.
+
+## Language Identification from Canonical Pages
+
+When we compute the language identification from canonical pages, we use the same
+pipeline as described above, but we set the flag `USE_CANONICAL=1` in
+addition to the newspaper name. This flag tells the pipeline to use the canonical
+pages as input instead of the rebuilt OCR text. The canonical pages are stored
+in a separate S3 bucket and need to be synchronized locally first. The
+synchronization is done automatically by the cookbook when the flag
+`USE_CANONICAL=1` is set.
+The canonical pages are stored in the S3 bucket defined by the variable
+`S3_BUCKET_CANONICAL`. By default, this variable is set to `112-canonical-sandbox`
+in the configuration file `configs/config-langidentocrqa_canonical-lid-ensemble_multilingual_v2-0-1.mk`.
+You can override this variable in your own configuration file.
+Assuming that $(NEWSPAPER) contains the provider level prefix, and $(NP) is the newspaper name without provider prefix,
+The path arithmetic for canonical processing is as follows:
+
+- The canonical pages of a NEWSPAPER for each YEAR are stored in the S3 bucket $(S3_BUCKET_CANONICAL)
+  under the path
+  `$(NEWSPAPER)/pages/$(NP)-$(YEAR)/$(NP)-YEAR-MM-DD-EDITION-pages.jsonl.bz2`.
+  - The local stamps for the make build refer
+    $(BUILD_DIR)/$(NEWSPAPER)/pages/$(NP)-YEAR.stamp reflect the newest
+    $(NP)-YEAR-MM-DD-EDITION-pages.jsonl.bz2 timestamp metadata on S3.
+  - The processed canonical LID output files are stored per NEWSPAPER and YEAR packages in the
+    bucket $(S3_BUCKET_CANONICAL_PROCESSED_DATA) under the path
+    `$(NEWSPAPER)/langident/RUNID/systems/$(NP)-YEAR-lid.jsonl.bz2`.
+  - In order to compute

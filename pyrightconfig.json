@@ -1,0 +1,6 @@
+{
+  "include": ["lib", "cookbook/lib"],
+  "extraPaths": ["cookbook/lib"],
+  "pythonVersion": "3.10",
+  "typeCheckingMode": "basic"
+}
