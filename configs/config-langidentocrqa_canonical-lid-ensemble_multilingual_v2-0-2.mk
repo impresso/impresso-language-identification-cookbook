@@ -7,6 +7,8 @@ S3_PREFIX_NEWSPAPERS_TO_PROCESS_BUCKET ?= $(S3_BUCKET_CANONICAL)
 S3_BUCKET_LANGIDENT_STAGE1 ?= 115-canonical-processed-final
 S3_BUCKET_LANGIDENT ?= $(S3_BUCKET_LANGIDENT_STAGE1)
 NEWSPAPER ?= BL/AATA
+RUN_VERSION_LANGIDENT ?= v2-0-2
+
 
 # FOR BL we do not use impresso_langident_pipeline for the moment as English coverage is bad
 LANGIDENT_SYSTEMS_LIDS_OPTION ?= langid wp_ft lingua $(if $(filter BL/%,$(NEWSPAPER)),,impresso_langident_pipeline) $(if $(filter BL/%,$(NEWSPAPER)),,impresso_ft)
