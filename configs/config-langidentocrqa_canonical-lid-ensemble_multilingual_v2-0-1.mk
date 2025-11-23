@@ -4,9 +4,8 @@ NEWSPAPER_HAS_PROVIDER ?= 1
 NEWSPAPER_FNMATCH ?= BL/*
 S3_BUCKET_CANONICAL ?= 112-canonical-final
 S3_PREFIX_NEWSPAPERS_TO_PROCESS_BUCKET ?= $(S3_BUCKET_CANONICAL)
-S3_BUCKET_LANGIDENT_STAGE1 ?= 113-canonical-processed-sandbox
+S3_BUCKET_LANGIDENT_STAGE1 ?= 115-canonical-processed-final
 S3_BUCKET_LANGIDENT ?= $(S3_BUCKET_LANGIDENT_STAGE1)
-#S3_BUCKET_LANGIDENT_STAGE1 ?= 140-processed-data-sandbox
 NEWSPAPER ?= BL/AATA
 
 # FOR BL we do not use impresso_langident_pipeline for the moment as English coverage is bad
