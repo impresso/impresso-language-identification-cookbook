@@ -242,7 +242,7 @@ class AggregatorLID:
         git_describe: str,
         outfile: Optional[str] = None,
     ):
-        self.attrs_for_json: list = [
+        self.attrs_for_json: List[str] = [
             # configured information
             "newspaper",
             "lids",
@@ -392,13 +392,47 @@ class AggregatorLID:
             else:
                 transport_params = {}
 
-            with smart_open.open(
-                input_file, transport_params=transport_params, encoding="utf-8"
-            ) as reader:
-                for line in reader:
-                    if line.strip():
-                        contentitem = json.loads(line)
-                        yield contentitem
+            try:
+                log.info("Processing file: %s", input_file)
+                with smart_open.open(
+                    input_file, transport_params=transport_params, encoding="utf-8"
+                ) as reader:
+                    line_count = 0
+                    for line in reader:
+                        line_count += 1
+                        if line.strip():
+                            try:
+                                contentitem = json.loads(line)
+                                yield contentitem
+                            except json.JSONDecodeError as e:
+                                log.error(
+                                    "JSON decode error in file %s at line %d: %s",
+                                    input_file,
+                                    line_count,
+                                    e,
+                                )
+                                raise
+                log.info(
+                    "Successfully processed %d lines from %s", line_count, input_file
+                )
+            except OSError as e:
+                log.error(
+                    "Failed to read file %s: %s. "
+                    "The file may be corrupted or incomplete.",
+                    input_file,
+                    e,
+                )
+                raise RuntimeError(
+                    f"Cannot process file {input_file}: {e}. "
+                    "The file may be corrupted, incomplete, or in an invalid format."
+                ) from e
+            except Exception as e:
+                log.error(
+                    "Unexpected error while processing file %s: %s",
+                    input_file,
+                    e,
+                )
+                raise
 
     def update_lid_distributions(self, content_item: ContentItem) -> None:
         """Record absolute counts for each LID system given one item."""
