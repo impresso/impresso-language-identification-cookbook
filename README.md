@@ -52,27 +52,24 @@ streamlined processing workflows.
 Under Debian/Ubuntu, install the following packages:
 
 ```sh
-$ # install python3.11 according to your OS
-$ sudo apt install git git-lfs make moreutils parallel python3.11-dev build-essential # needed for building
-$ sudo apt install rclone  # needed for S3 synchronization
-$ sudo apt install jq  # needed for computing statistics
+# install python3.11 according to your OS
+sudo apt install git git-lfs make moreutils parallel python3.11-dev build-essential jq # needed for building
 ```
 
 On macOS:
 
 ```sh
-$ brew install git git-lfs make coreutils parallel
-$ brew install rclone jq
+brew install git git-lfs make coreutils parallel jq 
 ```
 
 ### Installation
 
 ```sh
-$ git clone --recursive https://github.com/impresso/impresso-language-identification-cookbook.git
-$ cd impresso-language-identification-cookbook
-$ python3.11 -mpip install pipenv
-$ python3.11 -mpipenv install
-$ python3.11 -mpipenv shell
+git clone --recursive https://github.com/impresso/impresso-language-identification-cookbook.git
+cd impresso-language-identification-cookbook
+python3.11 -mpip install pipenv
+python3.11 -mpipenv install
+python3.11 -mpipenv shell
 ```
 
 ### Configuration

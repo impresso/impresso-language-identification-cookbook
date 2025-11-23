@@ -62,22 +62,22 @@ log = logging.getLogger(__name__)
 
 FILTER = r"""
 {
-  id,
-  lg,
-  lg_decision,
-  tp,
-  len,
-  orig_lg: (if .orig_lg | type == "array" then .orig_lg[0].lang else .orig_lg end),
-  alphabetical_ratio,
-  impresso_language_identifier_version,
-  year,
-  newspaper,
-  ts,
+    id,
+    lg,
+    lg_decision,
+    tp,
+    len,
+    orig_lg: (if .orig_lg | type == "array" then .orig_lg[0].lang else .orig_lg end),
+    alphabetical_ratio,
+    impresso_language_identifier_version,
+    year,
+    newspaper,
+    ts,
 
-  systems: (. | with_entries(select(.value | type=="array"))),
+    systems: (. | with_entries(select(.value | type=="array"))),
 
-  ocrqa: (.ocrqa[.lg].score // null),
-  bloom: (.ocrqa[.lg].model_id // null)
+    ocrqa: (if .lg != null and .ocrqa != null and .ocrqa[.lg] != null then .ocrqa[.lg].score else null end),
+    bloom: (if .lg != null and .ocrqa != null and .ocrqa[.lg] != null then .ocrqa[.lg].model_id else null end)
 }
 """
 
@@ -94,6 +94,18 @@ LidPredictionMap = dict[str, LidPrediction]
 
 
 class ImpressoLanguageIdentifierEnsemble:
+
+    def ensure_jq_fields(self, content_item: Dict[str, Any]) -> None:
+        """Ensure all fields required by the jq filter are present in the content item."""
+        content_item.setdefault("alphabetical_ratio", None)
+        content_item.setdefault(
+            "impresso_language_identifier_version", self.git_describe or __version__
+        )
+        content_item.setdefault("year", content_item.get("year", ""))
+        content_item.setdefault("newspaper", content_item.get("newspaper", ""))
+        content_item.setdefault("ocrqa", None)
+        content_item.setdefault("systems", {})
+
     """Identify language for each content item using ensemble decision
 
     :param str infile: JSON file with language predictions per content item.
@@ -530,8 +542,17 @@ class ImpressoLanguageIdentifierEnsemble:
 
         for c in self.next_content_item():
             log.info("Processing %s", c["id"])
-            transformed = project.input(self.decide_lg(c)).first()
-            self.results.append(transformed)
+            try:
+                transformed = project.input(self.decide_lg(c)).first()
+                self.results.append(transformed)
+            except Exception as e:
+                log.error(
+                    "JQ transformation failed for content item %s. JSON: %s. Error: %s",
+                    c.get("id", "unknown"),
+                    json.dumps(c, ensure_ascii=False),
+                    str(e),
+                )
+                raise
 
     def decide_lg(self, content_item: Dict[str, Any]) -> Dict[str, Any]:
         """Return a dict with decision information for a content item.
@@ -709,6 +730,7 @@ class ImpressoLanguageIdentifierEnsemble:
             )
             content_item["lg"] = dominant_lg
             content_item["lg_decision"] = "dominant-by-len"
+            self.ensure_jq_fields(content_item)
             return content_item
 
         votes: Dict[str, float] = self.get_votes(content_item)
