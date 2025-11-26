@@ -1,7 +1,7 @@
 {
     "_meta": {
         "hash": {
-            "sha256": "980d531ed0322cf7dccebc3e4e99599803620a785ebe9ce222de12f775a8bee7"
+            "sha256": "f42276bf77deca2b3f94433bef48a0e94e8f4f9a7b7cf3bf31f70494ed4e31a1"
         },
         "pipfile-spec": 6,
         "requires": {
@@ -621,7 +621,7 @@
             ],
             "git": "https://github.com/impresso/impresso-pipelines.git",
             "markers": "python_version >= '3.11' and python_version < '3.13'",
-            "ref": "9d9fb2812cd5976c0548f2074bfe19f0998ab322"
+            "ref": "8f9529e7ca286fd7c57e5e297933b272b7fe12e7"
         },
         "invoke": {
             "hashes": [
