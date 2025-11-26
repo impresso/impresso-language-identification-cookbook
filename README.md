@@ -68,7 +68,7 @@ brew install git git-lfs make coreutils parallel jq
 git clone --recursive https://github.com/impresso/impresso-language-identification-cookbook.git
 cd impresso-language-identification-cookbook
 python3.11 -mpip install pipenv
-python3.11 -mpipenv install
+PIPENV_VENV_IN_PROJECT=enabled python3.11 -mpipenv install
 python3.11 -mpipenv shell
 ```
 
