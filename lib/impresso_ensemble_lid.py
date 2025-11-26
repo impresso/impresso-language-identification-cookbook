@@ -647,6 +647,19 @@ class ImpressoLanguageIdentifierEnsemble:
             all_lid_languages,
         )
 
+        # If no LID predictions at all, use dominant language
+        if not all_lid_languages:
+            log.debug(
+                "Content item %s: No LID predictions available, "
+                "using dominant language: %s",
+                content_item["id"],
+                dominant_lg,
+            )
+            content_item["lg"] = dominant_lg
+            content_item["lg_decision"] = "dominant-by-no-predictions"
+            self.ensure_jq_fields(content_item)
+            return content_item
+
         # rule 2a: follow unequivocal predictions
         if len(all_lid_languages) == 1:
             decided_language = min(all_lid_languages)
@@ -674,9 +687,12 @@ class ImpressoLanguageIdentifierEnsemble:
                 other_lg,
             )
 
+            # Handle null alphabetical_ratio by treating it as 1.0
+            alpha_ratio = content_item.get("alphabetical_ratio")
+            if alpha_ratio is None:
+                alpha_ratio = 1.0
             text_length_condition = (
-                content_item["len"] * content_item["alphabetical_ratio"]
-                >= self.minimal_text_length
+                content_item["len"] * alpha_ratio >= self.minimal_text_length
             )
             in_ensemble_distribution = (
                 other_lg in self.newspaper_stats["lid_distributions"]["ensemble"]
@@ -782,6 +798,11 @@ class ImpressoLanguageIdentifierEnsemble:
         )
         content_item["lg"] = winning_language
         content_item["lg_decision"] = "voting"
+        # Final fallback: ensure lg is set for non-image items with length > 0
+        if content_item.get("len", 0) > 0:
+            if not content_item.get("lg"):
+                content_item["lg"] = dominant_lg
+                content_item["lg_decision"] = "dominant-fallback"
         return content_item
 
     def update_stats(self) -> None:
