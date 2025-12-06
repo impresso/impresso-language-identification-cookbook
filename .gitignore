@@ -34,3 +34,4 @@ config.local.mk
 !.idea/vcs.xml
 !.idea/inspectionProfiles/
 .aws
+huggingface
