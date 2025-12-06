@@ -16,7 +16,8 @@ CONSOLIDATEDCANONICAL_VALIDATE_OPTION ?= --validate
 LANGIDENT_SYSTEMS_LIDS_OPTION ?= langid wp_ft lingua \
   $(if $(filter BL/%,$(NEWSPAPER)),,impresso_langident_pipeline) \
   $(if $(filter BL/%,$(NEWSPAPER)),,impresso_ft) \
-  $(if $(filter BNL/%,$(NEWSPAPER)),impresso_ft,) 
+  $(if $(filter BNL/%,$(NEWSPAPER)),impresso_ft,) \
+  $(if $(filter BNF/%,$(NEWSPAPER)),impresso_langident_pipeline,) 
 
 LANGIDENT_ENSEMBLE_WEIGHT_LB_IMPRESSO_OPTION ?= 3.0
 LANGIDENT_ENSEMBLE_MINIMAL_LID_PROBABILITY_OPTION ?= 0.5
