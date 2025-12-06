@@ -24,15 +24,14 @@ metadata on the language of their content items:
 
 As a result, neither the available metadata nor the individual predictions of a
 classifier are sufficient to predict the correct language. Therefore, we follow
-a three-step approach:
+a three-stage approach:
 
-1. predict the language of an article using various probabilistic language
-   identification classifiers (stage 1a)
-2. aggregate the predictions, compute an ensemble decision for longer articles
-   and assess the confidence of a classifier by comparing against the ensemble
-   decision (stage 1b)
-3. predict the final language of an article following a rule-based approach and
-   ensemble voting (ensemble stage)
+1. **Stage 1a**: Apply multiple language identification systems (langid, wp_ft,
+   impresso_ft, lingua, etc.) to predict the language of each content item
+2. **Stage 1b**: Aggregate Stage 1a predictions across all content items to compute
+   newspaper-level statistics (dominant language, overall distribution, confidence metrics)
+3. **Ensemble Stage**: Make final language decisions using rule-based voting that
+   combines Stage 1a predictions with Stage 1b statistics
 
 For our model `impresso_ft`, we selected and trained specifically on items where
 the original language was different from the predicted languages, and on
@@ -59,7 +58,7 @@ sudo apt install git git-lfs make moreutils parallel python3.11-dev build-essent
 On macOS:
 
 ```sh
-brew install git git-lfs make coreutils parallel jq 
+brew install git git-lfs make coreutils parallel jq
 ```
 
 ### Installation
@@ -101,59 +100,53 @@ For most users, the simplest approach is:
 # Setup (one-time)
 make setup
 
-# Process a single newspaper
+# Process a single newspaper (runs all three stages)
 make newspaper NEWSPAPER=actionfem
 
-# Process entire collection (parallel)
+# Process entire collection in parallel
 make collection
 ```
 
 ## Detailed Processing Pipeline
 
-### Stage 1a: Automatic Language Identification
+### Stage 1a: Apply Multiple Language Identification Systems
 
-We first apply several off-the-shelf LID classifiers and our model to the
-texts. Additionally, OCR Quality Assessment (OCRQA) can be optionally enabled
-to evaluate the quality of the OCR text for each language. The OCRQA scores
-provide an estimate of text quality that can be used alongside language
-identification for assessing the reliability of the results.
+We apply multiple language identification systems to each content item, generating
+predictions from each system. Additionally, OCR Quality Assessment (OCRQA) can be
+optionally enabled to evaluate the quality of the OCR text for each language.
 
-The corresponding build command is:
+**Processing Script**: `lib/impresso_langident_systems.py`
+
+**Output**: Per-newspaper-year files with predictions from all configured LID systems
+
+- Example: `WTCH-1828.jsonl.bz2` contains predictions from all systems for year 1828
+
+**Build commands**:
 
 ```sh
+# Run all three stages in sequence
 make langident-target
-```
 
-This command runs all three stages (1a, 1b, and ensemble) in sequence. To run individual stages:
-
-```sh
-make impresso-lid-stage1a-target  # Initial LID predictions only
-make impresso-lid-stage1b-target  # Collection statistics only
-make impresso-lid-ensemble-target # Final ensemble decisions only
-```
-
-# To use the new script name in any documentation that mentions the specific script:
-
-```sh
-# Stage 1a uses impresso_langident_systems.py
-# Stage 1b uses newspaper_statistics.py
-# Ensemble uses impresso_ensemble_lid.py
+# Or run individual stages:
+make impresso-lid-systems-target     # Stage 1a: Individual system predictions
+make impresso-lid-statistics-target  # Stage 1b: Newspaper-level aggregation
+make impresso-lid-ensemble-target    # Ensemble: Final decisions
 ```
 
 ### Available Language Identification Systems
 
 The pipeline supports multiple language identification systems that can be configured
-via the `LANGIDENT_LID_SYSTEMS_OPTION` variable:
+via the `LANGIDENT_SYSTEMS_LIDS_OPTION` variable:
 
 ```sh
 # Use all available systems (default) - recommended for production
-make langident-target LANGIDENT_LID_SYSTEMS_OPTION="langid impresso_ft wp_ft impresso_langident_pipeline lingua"
+make langident-target LANGIDENT_SYSTEMS_LIDS_OPTION="langid impresso_ft wp_ft impresso_langident_pipeline lingua"
 
-# Use only FastText-based systems - faster processing, good for major languages
-make langident-target LANGIDENT_LID_SYSTEMS_OPTION="impresso_ft wp_ft"
+# Use only FastText-based systems - faster processing
+make langident-target LANGIDENT_SYSTEMS_LIDS_OPTION="impresso_ft wp_ft"
 
-# Include langdetect for additional coverage - use when Luxembourgish is not expected
-make langident-target LANGIDENT_LID_SYSTEMS_OPTION="langid langdetect impresso_ft wp_ft lingua"
+# Include langdetect (note: no Luxembourgish support)
+make langident-target LANGIDENT_SYSTEMS_LIDS_OPTION="langid langdetect impresso_ft wp_ft lingua"
 ```
 
 **Recommendation**: Use the default configuration unless you have specific performance constraints or know that certain languages are not present in your data.
@@ -217,15 +210,24 @@ Historical newspapers present unique challenges that no single language identifi
 
 By combining multiple systems and using ensemble voting, we can leverage the strengths of each approach while mitigating individual weaknesses.
 
-### Stage 1b: Aggregating collection statistics on language
+### Stage 1b: Aggregate Newspaper-Level Statistics
 
-Given the incomplete and sometimes unreliable metadata regarding the content
-items' language, we aggregate statistics per collection to assess the confidence
-in the classifiers. The global statistics allow us to take a more informed
-decision in the next stage of processing.
+Stage 1b aggregates all Stage 1a predictions across a newspaper to compute
+newspaper-level statistics. These statistics inform the Ensemble stage's voting
+process.
 
-In order to assess the dominant language of a newspaper, we compute the
-statistics per collection according to the following rules:
+**Processing Script**: `lib/newspaper_statistics.py`
+
+**Input**: All Stage 1a prediction files for a newspaper (e.g., WTCH-1828.jsonl.bz2, WTCH-1829.jsonl.bz2, ...)
+
+**Output**: Single `stats.json` file per newspaper containing:
+
+- Dominant language(s) for the newspaper
+- Overall language distribution across all content items
+- Confidence in original metadata
+- Per-system performance metrics
+
+**Aggregation rules**:
 
 - Content items with less than 200 non-letter characters are ignored.
 - Content items with an alphabetical ratio < 0.5 are ignored.
@@ -247,20 +249,37 @@ language information as well as the various LID classifiers. If this threshold
 is below 75% we ignore the information when determining the final decision per
 content item in stage 2.
 
-To perform this stage, run the following command:
+To perform this stage, run:
 
 ```sh
-make impresso-lid-stage1b-target
+make impresso-lid-statistics-target
 ```
 
-This command can only be run after stage 1a has been completed. It processes
-the aggregated statistics for the entire collection and must be run sequentially.
+**Note**: Stage 1b depends on Stage 1a - all Stage 1a prediction files must exist
+before computing newspaper-level statistics.
 
-### Stage Ensemble: Deciding the language per content item
+### Ensemble Stage: Final Language Decisions
 
-Given the output from various LID systems, the original language information,
-and optional OCRQA scores, we finally decide the language of an article
-according to the following rules:
+The Ensemble stage makes final language decisions by combining:
+
+- **Stage 1a predictions**: Individual system predictions for each content item
+- **Stage 1b statistics**: Newspaper-level language distribution and dominant language
+- **Original metadata**: When confidence threshold is met
+- **OCRQA scores**: When available
+
+**Processing Script**: `lib/impresso_ensemble_lid.py`
+
+**Input**:
+
+- Stage 1a file: `WTCH-1828.jsonl.bz2` (predictions from all systems)
+- Stage 1b file: `stats.json` (newspaper-level statistics)
+
+**Output**:
+
+- Final decisions: `WTCH-1828.jsonl.bz2` (final language per content item)
+- Diagnostics: `WTCH-1828.diagnostics.json` (decision codes and confidence)
+
+**Decision rules**:
 
 - If the overall support for the original language is below 75%, we ignore it
   completely. Otherwise, the original language is treated the same way as any
@@ -293,44 +312,27 @@ according to the following rules:
   - Otherwise, the language is set according to the evidence based on weighted
     votes. Decision code: `voting`.
 
-To perform this stage, run the following command:
+To perform this stage, run:
 
 ```sh
 make impresso-lid-ensemble-target
 ```
 
-The process of stage 1b and ensemble is relatively fast compared to stage 1a since it processes the already-computed predictions rather than running the language identification models on raw text.
+**Note**:
 
-**Note**: The ensemble output includes OCRQA scores (when available from stage 1a)
-in the final JSON. For each content item, the output contains the OCRQA score and
-model identifier for the decided language, which can be used to assess the
-reliability of the OCR text quality.
+- The Ensemble stage depends on both Stage 1a (predictions) and Stage 1b (statistics)
+- Stage 1b and Ensemble are relatively fast compared to Stage 1a since they process
+  existing predictions rather than running LID models on raw text
+- Ensemble output includes OCRQA scores (when available) for the decided language
 
-## Preparing the data release
+## Output Validation and Diagnostics
 
-Preparing the LID data release involves the following steps:
+The Ensemble stage automatically:
 
-- Validating the jsonl files from stage 2 according to impresso's [language
-  identification JSON
-  schema](https://github.com/impresso/impresso-schemas/blob/master/json/language_identification/language_identification.schema.json).
-- Copying over the per-collection aggregation statistics from stage 1b.
-- Preparing statistical diagnostics files for the whole impresso collection set
+- Validates output against the [Impresso language identification JSON schema](https://github.com/impresso/impresso-schemas/blob/master/json/language_identification/language_identification.schema.json)
+- Generates diagnostics files with decision codes and confidence metrics
 
-```sh
-make impresso-lid-release-target
-```
-
-After preparing the data one can upload to a configured s3 bucket
-
-```sh
-make impresso-lid-upload-release-to-s3
-```
-
-## Creating LID statistics
-
-During the ensemble stage, diagnostics files in JSON format are produced for each collection
-that aggregate information from the individual content item files. These statistics
-can be aggregated across the entire collection:
+To aggregate diagnostics across all newspapers:
 
 ```sh
 make aggregate-langident

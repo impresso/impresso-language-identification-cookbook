@@ -38,6 +38,7 @@ import datetime
 import json
 import logging
 import sys
+import time
 from collections import Counter, defaultdict
 from typing import (
     DefaultDict,
@@ -191,6 +192,7 @@ class ImpressoLanguageIdentifierEnsemble:
             newspaper_stats_filename, self.s3_client
         )
         self.results: List[Dict[str, Any]] = []
+        self.start_time: Optional[float] = None
 
         self.validate: bool = validate
         if self.validate:
@@ -198,6 +200,8 @@ class ImpressoLanguageIdentifierEnsemble:
 
     def run(self) -> None:
         """Run the application."""
+
+        self.start_time = time.time()
 
         log.info("Starting ensemble language identification")
         log.info("Input file: %s", self.infile)
@@ -208,6 +212,7 @@ class ImpressoLanguageIdentifierEnsemble:
         self.write_output()
         self.update_stats()
         self.write_diagnostics()
+        self._log_statistics()
 
     def load_schema(self) -> None:
         """
@@ -804,6 +809,93 @@ class ImpressoLanguageIdentifierEnsemble:
                 content_item["lg"] = dominant_lg
                 content_item["lg_decision"] = "dominant-fallback"
         return content_item
+
+    def _log_statistics(self) -> None:
+        """Log comprehensive processing statistics."""
+        total = len(self.results)
+
+        if total == 0:
+            log.info("STATS-ENSEMBLE-PROCESSED-ITEMS\t%d", total)
+            log.warning("No items processed")
+            return
+
+        # Log total processing time
+        if self.start_time:
+            total_time = time.time() - self.start_time
+            log.info("STATS-ENSEMBLE-TOTAL-TIME\t%.2f seconds", total_time)
+            items_per_sec = total / total_time if total_time > 0 else 0
+            log.info("STATS-ENSEMBLE-ITEMS-PER-SECOND\t%.2f", items_per_sec)
+
+        log.info("STATS-ENSEMBLE-PROCESSED-ITEMS\t%d (100.0%%)", total)
+
+        # Log content type distribution
+        if "tp" in self.stats:
+            log.info("STATS-ENSEMBLE-CONTENT-TYPE-DISTRIBUTION:")
+            for content_type, count in self.stats["tp"].most_common():
+                percentage = (count / total) * 100
+                log.info(
+                    "STATS-ENSEMBLE-CONTENT-TYPE-%s\t%d (%.1f%%)",
+                    content_type.upper(),
+                    count,
+                    percentage,
+                )
+
+        # Log decision type distribution
+        if "lg_decision" in self.stats:
+            log.info("STATS-ENSEMBLE-DECISION-TYPE-DISTRIBUTION:")
+            for decision_type, count in self.stats["lg_decision"].most_common():
+                percentage = (count / total) * 100
+                log.info(
+                    "STATS-ENSEMBLE-DECISION-%s\t%d (%.1f%%)",
+                    decision_type.upper().replace("-", "_"),
+                    count,
+                    percentage,
+                )
+
+        # Log language distribution (top 15)
+        if "lg" in self.stats:
+            log.info("STATS-ENSEMBLE-LANGUAGE-DISTRIBUTION-TOP15:")
+            for lang, count in self.stats["lg"].most_common(15):
+                percentage = (count / total) * 100
+                log.info(
+                    "STATS-ENSEMBLE-LANGUAGE-%s\t%d (%.1f%%)",
+                    lang.upper() if lang else "NULL",
+                    count,
+                    percentage,
+                )
+
+        # Log newspaper-year distribution
+        if "N" in self.stats:
+            log.info("STATS-ENSEMBLE-NEWSPAPER-YEAR-DISTRIBUTION:")
+            for newspaper_year, count in sorted(
+                self.stats["N"].items(), key=lambda x: x[1], reverse=True
+            )[:10]:
+                log.info(
+                    "STATS-ENSEMBLE-NEWSPAPER-YEAR-%s\t%d",
+                    newspaper_year,
+                    count,
+                )
+
+        # Log newspaper stats summary
+        if self.newspaper_stats:
+            log.info("STATS-ENSEMBLE-NEWSPAPER-CONTEXT:")
+            if "newspaper" in self.newspaper_stats:
+                log.info(
+                    "STATS-ENSEMBLE-NEWSPAPER-ID\t%s",
+                    self.newspaper_stats["newspaper"],
+                )
+            if "dominant_language" in self.newspaper_stats:
+                log.info(
+                    "STATS-ENSEMBLE-DOMINANT-LANGUAGE\t%s",
+                    self.newspaper_stats["dominant_language"],
+                )
+            if "overall_orig_lg_support" in self.newspaper_stats:
+                log.info(
+                    "STATS-ENSEMBLE-ORIG-LG-SUPPORT\t%.3f",
+                    self.newspaper_stats["overall_orig_lg_support"],
+                )
+
+        log.info("Ensemble language identification statistics logged successfully")
 
     def update_stats(self) -> None:
         """Update per-newspaper statistics for diagnostics.
