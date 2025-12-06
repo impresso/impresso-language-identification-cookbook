@@ -8,10 +8,16 @@ S3_BUCKET_LANGIDENT_STAGE1 ?= 115-canonical-processed-final
 S3_BUCKET_LANGIDENT ?= 115-canonical-processed-final
 NEWSPAPER ?= BL/AATA
 RUN_VERSION_LANGIDENT ?= v2-0-2
+CONSOLIDATEDCANONICAL_VALIDATE_OPTION ?= --validate
 
+# FOR BL we do not use impresso_langident_pipeline for the moment as English coverage is
+# bad
+# Also we only include impresso_ft for BNL newspapers (luxembourgish newspaper)
+LANGIDENT_SYSTEMS_LIDS_OPTION ?= langid wp_ft lingua \
+  $(if $(filter BL/%,$(NEWSPAPER)),,impresso_langident_pipeline) \
+  $(if $(filter BL/%,$(NEWSPAPER)),,impresso_ft) \
+  $(if $(filter BNL/%,$(NEWSPAPER)),impresso_ft,) 
 
-# FOR BL we do not use impresso_langident_pipeline for the moment as English coverage is bad
-LANGIDENT_SYSTEMS_LIDS_OPTION ?= langid wp_ft lingua $(if $(filter BL/%,$(NEWSPAPER)),,impresso_langident_pipeline) $(if $(filter BL/%,$(NEWSPAPER)),,impresso_ft)
 LANGIDENT_ENSEMBLE_WEIGHT_LB_IMPRESSO_OPTION ?= 3.0
 LANGIDENT_ENSEMBLE_MINIMAL_LID_PROBABILITY_OPTION ?= 0.5
 LANGIDENT_ENSEMBLE_MINIMAL_TEXT_LENGTH_OPTION ?= 50
@@ -34,7 +40,7 @@ LANGIDENT_ENSEMBLE_EXCLUDE_LB_OPTION ?= BCUL BL BNF FedGaz LeTemps NZZ SNL SWA S
 
 LANGIDENT_OCRQA_OPTION ?= --ocrqa
 LANGIDENT_OCRQA_REPO_OPTION ?= impresso-project/OCR-quality-assessment-unigram
-LANGIDENT_OCRQA_VERSION_OPTION ?= simplifiedv2
+LANGIDENT_OCRQA_VERSION_OPTION ?= main
 MAKE_SILENCE_RECIPE ?= 
 
 
