@@ -890,10 +890,14 @@ class ImpressoLanguageIdentifierEnsemble:
                     self.newspaper_stats["dominant_language"],
                 )
             if "overall_orig_lg_support" in self.newspaper_stats:
-                log.info(
-                    "STATS-ENSEMBLE-ORIG-LG-SUPPORT\t%.3f",
-                    self.newspaper_stats["overall_orig_lg_support"],
-                )
+                orig_lg_support = self.newspaper_stats["overall_orig_lg_support"]
+                if orig_lg_support is not None:
+                    log.info(
+                        "STATS-ENSEMBLE-ORIG-LG-SUPPORT\t%.3f",
+                        orig_lg_support,
+                    )
+                else:
+                    log.info("STATS-ENSEMBLE-ORIG-LG-SUPPORT\tNone")
 
         log.info("Ensemble language identification statistics logged successfully")
 
