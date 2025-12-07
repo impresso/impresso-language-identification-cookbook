@@ -35,6 +35,7 @@ Example:
 __version__ = "2025.06.24"
 
 import datetime
+import fnmatch
 import json
 import logging
 import sys
@@ -390,16 +391,17 @@ class ImpressoLanguageIdentifierEnsemble:
                         self.admissible_languages is None
                         or lang in self.admissible_languages
                     ):
-                        # Check if this newspaper should exclude lb language
-                        newspaper_id = content_item["id"][:-19]
-                        if lang == "lb" and newspaper_id in self.exclude_lb:
+                        # Check if this file path should exclude lb language
+                        if lang == "lb" and any(
+                            fnmatch.fnmatch(self.infile, f"*{pattern}*")
+                            for pattern in self.exclude_lb
+                        ):
                             log.debug(
-                                "Content item %s: %s prediction of %s excluded for"
-                                " newspaper %s",
+                                "Content item %s: %s prediction of %s excluded due to"
+                                " file path matching exclude_lb pattern",
                                 content_item["id"],
                                 lid,
                                 lang,
-                                newspaper_id,
                             )
                             continue
 
