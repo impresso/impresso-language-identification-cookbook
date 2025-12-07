@@ -1,7 +1,8 @@
 # Derived from impresso_ensemble_lid.py run logged on 2025-09-04 02:29:35
 USE_CANONICAL ?= 1
 NEWSPAPER_HAS_PROVIDER ?= 1
-NEWSPAPER_FNMATCH ?= BL/*
+NEWSPAPER_JOBS=6
+# NEWSPAPER_FNMATCH ?= BL/*
 S3_BUCKET_CANONICAL ?= 112-canonical-final
 S3_PREFIX_NEWSPAPERS_TO_PROCESS_BUCKET ?= $(S3_BUCKET_CANONICAL)
 S3_BUCKET_LANGIDENT_STAGE1 ?= 115-canonical-processed-final
@@ -13,11 +14,23 @@ CONSOLIDATEDCANONICAL_VALIDATE_OPTION ?= --validate
 # FOR BL we do not use impresso_langident_pipeline for the moment as English coverage is
 # bad
 # Also we only include impresso_ft for BNL newspapers (luxembourgish newspaper)
-LANGIDENT_SYSTEMS_LIDS_OPTION ?= langid wp_ft lingua \
-  $(if $(filter BL/%,$(NEWSPAPER)),,impresso_langident_pipeline) \
-  $(if $(filter BL/%,$(NEWSPAPER)),,impresso_ft) \
-  $(if $(filter BNL/%,$(NEWSPAPER)),impresso_ft,) \
-  $(if $(filter BNF/%,$(NEWSPAPER)),impresso_langident_pipeline,) 
+
+# Base LID systems (always included)
+LANGIDENT_SYSTEMS_LIDS_BASE ?= langid wp_ft lingua
+
+# Provider-specific additional systems (only non-default providers listed)
+LANGIDENT_SYSTEMS_LIDS_EXTRA_BL ?= 
+LANGIDENT_SYSTEMS_LIDS_EXTRA_BNF ?= 
+LANGIDENT_SYSTEMS_LIDS_EXTRA_BNL ?= impresso_ft impresso_langident_pipeline
+LANGIDENT_SYSTEMS_LIDS_EXTRA_DEFAULT ?= impresso_langident_pipeline
+
+# Extract provider prefix and lookup additional systems
+NEWSPAPER_PROVIDER = $(firstword $(subst /, ,$(NEWSPAPER)))
+LANGIDENT_SYSTEMS_LIDS_EXTRA = $(or \
+  $(LANGIDENT_SYSTEMS_LIDS_EXTRA_$(NEWSPAPER_PROVIDER)),\
+  $(LANGIDENT_SYSTEMS_LIDS_EXTRA_DEFAULT))
+
+LANGIDENT_SYSTEMS_LIDS_OPTION ?= $(LANGIDENT_SYSTEMS_LIDS_BASE) $(LANGIDENT_SYSTEMS_LIDS_EXTRA) 
 
 LANGIDENT_ENSEMBLE_WEIGHT_LB_IMPRESSO_OPTION ?= 3.0
 LANGIDENT_ENSEMBLE_MINIMAL_LID_PROBABILITY_OPTION ?= 0.5
