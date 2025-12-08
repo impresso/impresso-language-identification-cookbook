@@ -1,4 +1,4 @@
 [submodule "cookbook"]
 	path = cookbook
-	url = https://github.com/impresso-project/cookbook.git
+	url = https://github.com/impresso-project/impresso-make-cookbook.git
 	branch = main
