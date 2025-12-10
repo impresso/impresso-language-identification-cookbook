@@ -8,6 +8,7 @@ verify_ssl = true
 [packages]
 python-dotenv = "*"
 boto3 = "==1.35.95"
+urllib3 = ">=2.6.0"
 langid = "*"
 langdetect = "*"
 fasttext = "*"
