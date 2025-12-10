@@ -383,6 +383,9 @@ class ImpressoLanguageIdentifierSystems(object):
                 )
             except Exception as e:
                 log.error("Failed to load OCR QA pipeline for %s: %s", self.infile, e)
+                import sys
+
+                sys.exit(7)
 
         # Initialize only requested models
         for lid_system in self.lids:
