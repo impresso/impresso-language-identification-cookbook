@@ -18,6 +18,7 @@ Key features:
 - Filtering based on text length and alphabetical ratio thresholds
 - Support for multiple LID systems: langdetect, langid, impresso_ft, wp_ft,
   impresso_langident_pipeline, lingua
+- OCRQA (OCR Quality Assessment) statistics aggregation when available
 - S3 and local file support for input
 - Comprehensive logging and statistical reporting
 
@@ -50,7 +51,12 @@ JSON Lines format with LID predictions per content item:
    "langdetect": [{"lang": "de", "prob": 1.0}],
    "langid": [{"lang": "de", "prob": 1.0}],
    "impresso_ft": [{"lang": "de", "prob": 1.0}],
-   "wp_ft": [{"lang": "de", "prob": 0.95}, {"lang": "en", "prob": 0.01}]
+   "wp_ft": [{"lang": "de", "prob": 0.95}, {"lang": "en", "prob": 0.01}],
+   "ocrqa": {
+      "de": {"score": 0.95},
+      "fr": {"score": 0.23},
+      "en": {"score": 0.18}
+   }
 }
 
 Output Format:
@@ -59,6 +65,8 @@ JSON object with newspaper-level statistics including:
 - Support ratios for each LID system and original metadata
 - Dominant language and overall confidence metrics
 - Content type and length distributions
+- OCRQA statistics (if available): average scores per language, best language
+  distribution, dominant language by OCRQA, and agreement with ensemble decisions
 
 Example usage:
     aggregator = AggregatorLID(
@@ -224,6 +232,17 @@ class AggregatorLID:
     :attr Counter orig_lg_ensemble_disagreements: Count of disagreements between orig_lg and ensemble decisions,
         formatted as "orig_lang->ensemble_lang".
     :attr int orig_lg_total_decisions: Total number of content items with non-null orig_lg that were processed.
+    :attr Optional[Dict[str, Any]] ocrqa_statistics: OCRQA statistics summary including:
+        - items_with_ocrqa: Number of content items with OCRQA data
+        - coverage_ratio: Proportion of processed items containing OCRQA scores
+        - avg_scores_per_language: Mean OCRQA score for each language
+        - best_language_distribution: Relative frequency of languages with
+          highest scores
+        - best_language_absolute_counts: Absolute counts for best languages
+        - dominant_language_by_ocrqa: Most frequent best-scoring language
+        - agreement_with_ensemble: Agreement statistics between OCRQA and
+          ensemble decisions
+        Set to None if no OCRQA data is present in the input.
 
     """
 
@@ -259,6 +278,8 @@ class AggregatorLID:
             "contentitem_type_distribution",
             "orig_lg_ensemble_disagreements",
             "orig_lg_total_decisions",
+            # OCRQA statistics
+            "ocrqa_statistics",
             # administrative information
             "ts",  # Add timestamp at top level
             "aggregator_lid",
@@ -352,6 +373,14 @@ class AggregatorLID:
         # Statistics for orig_lg vs ensemble disagreements
         self.orig_lg_ensemble_disagreements: Counter = Counter()
         self.orig_lg_total_decisions: int = 0
+
+        # OCRQA statistics
+        self.ocrqa_statistics: Optional[Dict[str, Any]] = None
+        self._ocrqa_items_processed: int = 0
+        self._ocrqa_language_scores: DefaultDict[str, List[float]] = defaultdict(list)
+        self._ocrqa_best_language_counts: Counter = Counter()
+        # Track if OCRQA max agrees with ensemble
+        self._ocrqa_agreement_with_ensemble: Counter = Counter()
 
     def run(self) -> None:
         """Execute the aggregation workflow and emit the final JSON payload."""
@@ -455,7 +484,8 @@ class AggregatorLID:
             content_item: LID predictions and metadata for one item.
 
         Returns:
-            Optional[VoteTally]: Normalized vote totals or ``None`` when no decision is possible.
+            Optional[VoteTally]: Normalized vote totals or ``None`` when no
+                decision is possible.
         """
         votes: VotesByLanguage = defaultdict(list)
 
@@ -590,6 +620,57 @@ class AggregatorLID:
                         lang,
                     )
 
+            # Collect OCRQA statistics if present
+            ocrqa_data = ci.get("ocrqa")
+            if ocrqa_data and isinstance(ocrqa_data, dict):
+                self._ocrqa_items_processed += 1
+
+                # Extract scores for each language
+                valid_scores = {}
+                for language, result in ocrqa_data.items():
+                    if result is not None and isinstance(result, dict):
+                        score = None
+                        # Try to extract score from various possible keys
+                        if "score" in result:
+                            score = result["score"]
+                        elif "quality" in result:
+                            score = result["quality"]
+                        elif "confidence" in result:
+                            score = result["confidence"]
+
+                        if score is not None and isinstance(score, (int, float)):
+                            self._ocrqa_language_scores[language].append(float(score))
+                            valid_scores[language] = float(score)
+
+                # Find best language(s) by OCRQA score
+                if valid_scores:
+                    max_score = max(valid_scores.values())
+                    best_languages = [
+                        lg for lg, sc in valid_scores.items() if sc == max_score
+                    ]
+
+                    # Count occurrences of best language(s)
+                    if len(best_languages) == 1:
+                        self._ocrqa_best_language_counts[best_languages[0]] += 1
+                        # Check agreement with ensemble decision
+                        if lang is not None:
+                            if best_languages[0] == lang:
+                                self._ocrqa_agreement_with_ensemble["agree"] += 1
+                            else:
+                                self._ocrqa_agreement_with_ensemble["disagree"] += 1
+                                log.info(
+                                    "OCRQA/ensemble mismatch in %s: "
+                                    "ocrqa_best=%s (score=%.3f), ensemble=%s",
+                                    ci["id"],
+                                    best_languages[0],
+                                    max_score,
+                                    lang,
+                                )
+                    else:
+                        # Multiple languages tied for best score
+                        best_lang_key = "_".join(sorted(best_languages))
+                        self._ocrqa_best_language_counts[best_lang_key] += 1
+
     def compute_support(self) -> None:
         """Convert raw counters into relative support metrics."""
 
@@ -607,7 +688,8 @@ class AggregatorLID:
             self.overall_orig_lg_support = None
 
         for lid in self.lids.union(["orig_lg"]):
-            # if a newspaper has no orig_lg or if none of the predicted outputs of a system got support
+            # if a newspaper has no orig_lg or if none of the predicted
+            # outputs of a system got support
             if not self.lg_support.get(lid):
                 continue
 
@@ -626,7 +708,7 @@ class AggregatorLID:
 
         ensemble_distribution = self.lid_distributions["ensemble"]
         self.dominant_language = (
-            max(ensemble_distribution, key=ensemble_distribution.get)
+            max(ensemble_distribution, key=lambda k: ensemble_distribution[k])
             if ensemble_distribution
             else None
         )
@@ -641,6 +723,75 @@ class AggregatorLID:
                 "Most common disagreements: %s",
                 dict(self.orig_lg_ensemble_disagreements.most_common(5)),
             )
+
+        # Compute OCRQA summary statistics
+        if self._ocrqa_items_processed > 0:
+            log.info(
+                "Processing OCRQA statistics for %d content items",
+                self._ocrqa_items_processed,
+            )
+
+            # Calculate average scores per language
+            avg_scores_per_language = {}
+            for language, scores in self._ocrqa_language_scores.items():
+                if scores:
+                    avg_scores_per_language[language] = round(
+                        sum(scores) / len(scores), self.round_ndigits
+                    )
+
+            # Calculate relative frequencies for best language distribution
+            best_lang_distribution: Dict[str, float] = {
+                k: float(v) for k, v in self._ocrqa_best_language_counts.items()
+            }
+            update_relfreq(
+                best_lang_distribution,
+                n=self._ocrqa_items_processed,
+                ndigits=self.round_ndigits,
+            )
+
+            # Calculate agreement ratio with ensemble
+            ocrqa_ensemble_agreement_ratio = None
+            if self._ocrqa_agreement_with_ensemble:
+                total_comparisons = sum(self._ocrqa_agreement_with_ensemble.values())
+                if total_comparisons > 0:
+                    agree_count = self._ocrqa_agreement_with_ensemble.get("agree", 0)
+                    ocrqa_ensemble_agreement_ratio = round(
+                        agree_count / total_comparisons, self.round_ndigits
+                    )
+
+            # Find dominant language by OCRQA
+            ocrqa_dominant_language = None
+            if best_lang_distribution:
+                ocrqa_dominant_language = max(
+                    best_lang_distribution,
+                    key=lambda k: best_lang_distribution[k],
+                )
+
+            self.ocrqa_statistics = {
+                "items_with_ocrqa": self._ocrqa_items_processed,
+                "coverage_ratio": round(
+                    self._ocrqa_items_processed / max(self.n, 1), self.round_ndigits
+                ),
+                "avg_scores_per_language": avg_scores_per_language,
+                "best_language_distribution": best_lang_distribution,
+                "best_language_absolute_counts": dict(self._ocrqa_best_language_counts),
+                "dominant_language_by_ocrqa": ocrqa_dominant_language,
+                "agreement_with_ensemble": {
+                    "ratio": ocrqa_ensemble_agreement_ratio,
+                    "counts": dict(self._ocrqa_agreement_with_ensemble),
+                },
+            }
+
+            log.info(
+                "OCRQA summary: %d items (%.1f%% coverage), "
+                "dominant language: %s, ensemble agreement: %s",
+                self._ocrqa_items_processed,
+                self.ocrqa_statistics["coverage_ratio"] * 100,
+                ocrqa_dominant_language,
+                ocrqa_ensemble_agreement_ratio,
+            )
+        else:
+            log.info("No OCRQA data found in input files")
 
     def jsonify(self) -> Dict[str, Any]:
         """Serialize the collected statistics into a JSON-safe dict."""
