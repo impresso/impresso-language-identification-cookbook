@@ -35,3 +35,4 @@ config.local.mk
 !.idea/inspectionProfiles/
 .aws
 huggingface
+callgrind.out.*

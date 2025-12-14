@@ -128,9 +128,9 @@ optionally enabled to evaluate the quality of the OCR text for each language.
 make langident-target
 
 # Or run individual stages:
-make impresso-lid-systems-target     # Stage 1a: Individual system predictions
-make impresso-lid-statistics-target  # Stage 1b: Newspaper-level aggregation
-make impresso-lid-ensemble-target    # Ensemble: Final decisions
+make langident-systems-target     # Stage 1a: Individual system predictions
+make langident-statistics-target  # Stage 1b: Newspaper-level aggregation
+make langident-ensemble-target    # Ensemble: Final decisions
 ```
 
 ### Available Language Identification Systems
@@ -252,7 +252,7 @@ content item in stage 2.
 To perform this stage, run:
 
 ```sh
-make impresso-lid-statistics-target
+make langident-statistics-target
 ```
 
 **Note**: Stage 1b depends on Stage 1a - all Stage 1a prediction files must exist
@@ -315,7 +315,7 @@ The Ensemble stage makes final language decisions by combining:
 To perform this stage, run:
 
 ```sh
-make impresso-lid-ensemble-target
+make langident-ensemble-target
 ```
 
 **Note**:

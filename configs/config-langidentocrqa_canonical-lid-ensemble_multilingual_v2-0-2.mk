@@ -17,12 +17,16 @@ CONSOLIDATEDCANONICAL_VALIDATE_OPTION ?= --validate
 
 # Base LID systems (always included)
 LANGIDENT_SYSTEMS_LIDS_BASE ?= langid wp_ft lingua
+LANGIDENT_SYSTEMS_LIDS_EXTRA_DEFAULT ?= impresso_langident_pipeline
 
 # Provider-specific additional systems (only non-default providers listed)
 LANGIDENT_SYSTEMS_LIDS_EXTRA_BL ?= 
 LANGIDENT_SYSTEMS_LIDS_EXTRA_BNF ?= 
 LANGIDENT_SYSTEMS_LIDS_EXTRA_BNL ?= impresso_ft impresso_langident_pipeline
-LANGIDENT_SYSTEMS_LIDS_EXTRA_DEFAULT ?= impresso_langident_pipeline
+
+LANGIDENT_SYSTEMS_LIDS_EXTRA_SWA ?= $(LANGIDENT_SYSTEMS_LIDS_EXTRA_DEFAULT)
+LANGIDENT_SYSTEMS_LIDS_EXTRA_SNL ?= $(LANGIDENT_SYSTEMS_LIDS_EXTRA_DEFAULT)
+
 
 # Extract provider prefix and lookup additional systems
 NEWSPAPER_PROVIDER = $(firstword $(subst /, ,$(NEWSPAPER)))
