@@ -1,2 +1,6 @@
 SE_ACCESS_KEY=<YOUR VALUE>
 SE_SECRET_KEY=<YOUR VALUE>
+
+# Hugging Face authentication token (required for OCR QA pipeline to avoid rate limiting)
+# Get your token from https://huggingface.co/settings/tokens
+HF_TOKEN=<YOUR HUGGING FACE TOKEN>
