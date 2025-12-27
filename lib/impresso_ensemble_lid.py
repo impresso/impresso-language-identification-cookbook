@@ -663,7 +663,7 @@ class ImpressoLanguageIdentifierEnsemble:
                 dominant_lg,
             )
             content_item["lg"] = dominant_lg
-            content_item["lg_decision"] = "dominant-by-len"
+            content_item["lg_decision"] = "dominant-by-fallback"
             self.ensure_jq_fields(content_item)
             return content_item
 
