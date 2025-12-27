@@ -663,7 +663,7 @@ class ImpressoLanguageIdentifierEnsemble:
                 dominant_lg,
             )
             content_item["lg"] = dominant_lg
-            content_item["lg_decision"] = "dominant-by-fallback"
+            content_item["lg_decision"] = "dominant-by-lowvote"
             self.ensure_jq_fields(content_item)
             return content_item
 
@@ -809,7 +809,7 @@ class ImpressoLanguageIdentifierEnsemble:
         if content_item.get("len", 0) > 0:
             if not content_item.get("lg"):
                 content_item["lg"] = dominant_lg
-                content_item["lg_decision"] = "dominant-fallback"
+                content_item["lg_decision"] = "dominant-lowvote"
         return content_item
 
     def _log_statistics(self) -> None:
