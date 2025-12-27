@@ -10,8 +10,8 @@ S3_BUCKET_LANGIDENT ?= 115-canonical-processed-final
 #NEWSPAPER ?= BL/AATA
 RUN_VERSION_LANGIDENT ?= v2-0-2
 CONSOLIDATEDCANONICAL_VALIDATE_OPTION ?= --validate
-
-LANGIDENT_UPLOAD_IF_NEWER_OPTION ?= --upload-if-newer
+LANGIDENT_UPLOAD_IF_NEWER_OPTION ?= 
+#LANGIDENT_UPLOAD_IF_NEWER_OPTION ?= --upload-if-newer
 
 # FOR BL we do not use impresso_langident_pipeline for the moment as English coverage is
 # bad
