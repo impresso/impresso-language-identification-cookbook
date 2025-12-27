@@ -931,6 +931,9 @@ class ImpressoLanguageIdentifierSystems(object):
                 jinfo = self._create_base_info(content_item)
                 is_valid, text, alpha_ratio = self._is_text_valid_for_lid(content_item)
 
+                # Always include alphabetical_ratio in output
+                jinfo["alphabetical_ratio"] = round(alpha_ratio, self.round_ndigits)
+
                 if not is_valid:
                     if "ft" not in content_item or not isinstance(
                         content_item["ft"], str
@@ -964,7 +967,6 @@ class ImpressoLanguageIdentifierSystems(object):
                     continue
 
                 # Text is valid for language identification
-                jinfo["alphabetical_ratio"] = round(alpha_ratio, self.round_ndigits)
                 self._perform_language_identification(text, models, jinfo)
 
                 # Check for disagreements between language identifiers
