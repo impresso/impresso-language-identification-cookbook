@@ -1001,6 +1001,47 @@ class ImpressoLanguageIdentifierSystems(object):
                 )
         log.info("Successfully wrote output for %s to %s", self.infile, self.outfile)
 
+    def _should_ignore_gn_spacing(self, page_data: dict) -> bool:
+        """Detect malformed canonical pages where gn is systematically true.
+
+        Some newspaper exports set ``gn`` to true for nearly all tokens. In that case,
+        trusting ``gn`` removes nearly all spaces and degrades language identification.
+        """
+        gn_present = 0
+        gn_true = 0
+
+        for region in page_data.get("r", []):
+            for paragraph in region.get("p", []):
+                for line in paragraph.get("l", []):
+                    for token in line.get("t", []):
+                        if "tx" not in token:
+                            continue
+                        if token.get("hy"):
+                            continue
+                        if "gn" in token:
+                            gn_present += 1
+                            if token.get("gn"):
+                                gn_true += 1
+
+        # If no tokens have gn, don't ignore it
+        if gn_present == 0:
+            return False
+
+        gn_true_ratio = gn_true / gn_present
+        if gn_true_ratio > 0.95:
+            page_id = page_data.get("id", "unknown")
+            log.info(
+                "Ignoring gn spacing for page %s from %s (gn true ratio %.1f%%, %d/%d)",
+                page_id,
+                self.infile,
+                gn_true_ratio * 100,
+                gn_true,
+                gn_present,
+            )
+            return True
+
+        return False
+
     def _extract_text_from_page(self, page_data: dict) -> Dict[str, str]:
         """Extract text from a canonical page format, grouped by content item ID.
 
@@ -1012,6 +1053,7 @@ class ImpressoLanguageIdentifierSystems(object):
         :rtype: Dict[str, str]
         """
         content_items = {}
+        ignore_gn_spacing = self._should_ignore_gn_spacing(page_data)
 
         if "r" not in page_data:
             return content_items
@@ -1063,7 +1105,9 @@ class ImpressoLanguageIdentifierSystems(object):
                                         line_text.append(token_text)
 
                                         # Handle spacing: if gn (glue next) is not True, add space
-                                        if not token.get("gn", False):
+                                        if ignore_gn_spacing or not token.get(
+                                            "gn", False
+                                        ):
                                             line_text.append(" ")
 
                             paragraph_text.append("".join(line_text).rstrip())
