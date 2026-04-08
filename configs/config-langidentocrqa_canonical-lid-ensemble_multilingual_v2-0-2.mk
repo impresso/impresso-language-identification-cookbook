@@ -2,7 +2,7 @@
 USE_CANONICAL ?= 1
 NEWSPAPER_HAS_PROVIDER ?= 1
 # requires setup if active
-LANGIDENT_HF_CACHE_ONLY_OPTION ?= --hf-cache-only
+LANGIDENT_LOCAL_FILES_ONLY_OPTION ?= --local-files-only
 NEWSPAPER_JOBS=6
 # NEWSPAPER_FNMATCH ?= LeTemps/*
 S3_BUCKET_CANONICAL ?= 112-canonical-final

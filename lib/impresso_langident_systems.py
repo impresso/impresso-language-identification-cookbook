@@ -263,7 +263,7 @@ class ImpressoLanguageIdentifierSystems(object):
         ocrqa: bool = False,
         ocrqa_repo: str = None,
         ocrqa_version: str = "main",
-        hf_cache_only: bool = False,
+        local_files_only: bool = False,
     ):
 
         self.infile: str = infile
@@ -277,7 +277,7 @@ class ImpressoLanguageIdentifierSystems(object):
         self.ocrqa: bool = ocrqa
         self.ocrqa_repo: str = ocrqa_repo
         self.ocrqa_version: str = ocrqa_version
-        self.hf_cache_only: bool = hf_cache_only
+        self.local_files_only: bool = local_files_only
 
         # Validate that issue_file is provided for canonical format
         if self.format == "canonical" and not self.issue_file:
@@ -346,121 +346,218 @@ class ImpressoLanguageIdentifierSystems(object):
             total_time,
         )
 
-    def _initialize_models(self):
-        """Initialize language identification models based on requested LID systems."""
+    def _can_initialize_impresso_langident_pipeline(self) -> bool:
+        """Return whether the impresso langident pipeline is available."""
+        return IMPRESSO_LANGIDENT_PIPELINE_AVAILABLE
+
+    def _can_initialize_ocrqa(self) -> bool:
+        """Return whether OCR QA is requested and available."""
+        return self.ocrqa and IMPRESSO_OCRQA_AVAILABLE
+
+    def _abort_for_required_pipeline(self, pipeline_name: str, reason: str) -> None:
+        """Abort processing when a requested pipeline is unavailable or unusable."""
+        log.critical(
+            "Required pipeline %s failed for %s: %s",
+            pipeline_name,
+            self.infile,
+            reason,
+        )
+        sys.exit(7)
+
+    def _ensure_local_files_only_supported(
+        self, pipeline_name: str, pipeline_class
+    ) -> None:
+        """Abort if local-files-only was requested but the pipeline cannot honor it."""
+        if not self.local_files_only:
+            return
+
+        try:
+            parameters = inspect.signature(pipeline_class.__init__).parameters
+        except (TypeError, ValueError) as exc:
+            self._abort_for_required_pipeline(
+                pipeline_name,
+                f"could not inspect constructor for local_files_only support: {exc}",
+            )
+
+        if "local_files_only" not in parameters:
+            self._abort_for_required_pipeline(
+                pipeline_name,
+                "local_files_only was requested but the installed pipeline does not"
+                " support it",
+            )
+
+    def _langident_pipeline_kwargs(self) -> dict:
+        """Build constructor kwargs for the impresso langident pipeline."""
+        kwargs = {}
+        if self.local_files_only:
+            kwargs["local_files_only"] = True
+        return kwargs
+
+    def _ocrqa_pipeline_kwargs(self) -> dict:
+        """Build constructor kwargs for the OCR QA pipeline."""
+        kwargs = {}
+        if self.ocrqa_repo is not None:
+            kwargs["repo_id"] = self.ocrqa_repo
+        if self.ocrqa_version is not None:
+            kwargs["revision"] = self.ocrqa_version
+        if self.local_files_only:
+            kwargs["local_files_only"] = True
+        return kwargs
+
+    def _log_local_files_only_mode(self) -> None:
+        """Log whether Hugging Face local-files-only mode is active."""
+        if self.local_files_only:
+            log.info("Hugging Face local-files-only mode is enabled")
+        else:
+            log.info(
+                "Hugging Face local-files-only mode is disabled; pipeline"
+                " initialization may fetch remote assets"
+            )
+
+    def _initialize_lid_models(self) -> dict:
+        """Initialize the requested language identification models."""
         models = {}
 
-        log.info("Initializing models for input file: %s", self.infile)
+        log.info("Initializing LID models for input file: %s", self.infile)
 
-        def build_pipeline_kwargs(constructor, **kwargs):
-            """Keep only keyword arguments supported by a pipeline constructor."""
-            signature = inspect.signature(constructor)
-            parameters = signature.parameters
-            supported_kwargs = {
-                key: value
-                for key, value in kwargs.items()
-                if value is not None and key in parameters
-            }
-            if self.hf_cache_only:
-                if "hf_cache_only" in parameters:
-                    supported_kwargs["hf_cache_only"] = True
-                elif "local_files_only" in parameters:
-                    supported_kwargs["local_files_only"] = True
-                else:
-                    log.warning(
-                        "HF cache-only mode requested for %s, but %s does not"
-                        " support hf_cache_only/local_files_only; ignoring flag.",
-                        self.infile,
-                        constructor.__name__,
-                    )
-            return supported_kwargs
-
-        # Define model initializers
-        model_initializers = {
-            "langid": lambda: langid.LanguageIdentifier.from_modelstring(
-                langid.model, norm_probs=True
-            ),
-            "impresso_ft": lambda: (
-                fasttext.load_model(self.impresso_ft) if self.impresso_ft else None
-            ),
-            "wp_ft": lambda: fasttext.load_model(self.wp_ft) if self.wp_ft else None,
-            "impresso_langident_pipeline": lambda: (
-                LangIdentPipeline(**build_pipeline_kwargs(LangIdentPipeline))
-                if IMPRESSO_LANGIDENT_PIPELINE_AVAILABLE
-                else None
-            ),
-            "lingua": lambda: (
-                LanguageDetectorBuilder.from_all_languages().build()
-                if LINGUA_AVAILABLE
-                else None
-            ),
-        }
-
-        # Initialize OCR QA pipeline if requested
-        if self.ocrqa:
+        if "langid" in self.lids:
             try:
-                models["ocrqa"] = OCRQAPipeline(
-                    **build_pipeline_kwargs(
-                        OCRQAPipeline,
-                        repo_id=self.ocrqa_repo,
-                        revision=self.ocrqa_version,
-                    )
+                models["langid"] = langid.LanguageIdentifier.from_modelstring(
+                    langid.model, norm_probs=True
                 )
-                log.info(
-                    "Successfully loaded OCR QA pipeline for %s (repo: %s,"
-                    " version: %s)",
-                    self.infile,
-                    self.ocrqa_repo,
-                    self.ocrqa_version,
-                )
+                log.info("Successfully loaded langid model for %s", self.infile)
             except Exception as e:
-                log.error("Failed to load OCR QA pipeline for %s: %s", self.infile, e)
-                import sys
+                log.error("Failed to load langid model for %s: %s", self.infile, e)
 
-                sys.exit(7)
-
-        # Initialize only requested models
-        for lid_system in self.lids:
-            if lid_system in model_initializers:
+        if "impresso_ft" in self.lids:
+            if self.impresso_ft:
                 try:
-                    model = model_initializers[lid_system]()
-                    if model is not None:
-                        models[lid_system] = model
-                        log.info(
-                            "Successfully loaded %s model for %s",
-                            lid_system,
-                            self.infile,
-                        )
-                    else:
-                        log.warning(
-                            "Model path not provided for %s when processing %s",
-                            lid_system,
-                            self.infile,
-                        )
-                        if (
-                            lid_system == "impresso_langident_pipeline"
-                            and not IMPRESSO_LANGIDENT_PIPELINE_AVAILABLE
-                        ):
-                            log.warning(
-                                "impresso_pipelines package not available for %s",
-                                self.infile,
-                            )
-                        if lid_system == "lingua" and not LINGUA_AVAILABLE:
-                            log.warning(
-                                "lingua package not available for %s", self.infile
-                            )
+                    models["impresso_ft"] = fasttext.load_model(self.impresso_ft)
+                    log.info(
+                        "Successfully loaded impresso_ft model for %s", self.infile
+                    )
                 except Exception as e:
                     log.error(
-                        "Failed to load %s model for %s: %s", lid_system, self.infile, e
+                        "Failed to load impresso_ft model for %s: %s",
+                        self.infile,
+                        e,
                     )
-            elif (
-                lid_system != "langdetect"
-            ):  # langdetect doesn't need model initialization
+            else:
                 log.warning(
-                    "Unknown LID system %s when processing %s", lid_system, self.infile
+                    "Model path not provided for impresso_ft when processing %s",
+                    self.infile,
+                )
+
+        if "wp_ft" in self.lids:
+            if self.wp_ft:
+                try:
+                    models["wp_ft"] = fasttext.load_model(self.wp_ft)
+                    log.info("Successfully loaded wp_ft model for %s", self.infile)
+                except Exception as e:
+                    log.error("Failed to load wp_ft model for %s: %s", self.infile, e)
+            else:
+                log.warning(
+                    "Model path not provided for wp_ft when processing %s",
+                    self.infile,
+                )
+
+        if "impresso_langident_pipeline" in self.lids:
+            if not self._can_initialize_impresso_langident_pipeline():
+                self._abort_for_required_pipeline(
+                    "impresso_langident_pipeline",
+                    "missing optional dependency impresso_pipelines.langident",
+                )
+            else:
+                try:
+                    self._ensure_local_files_only_supported(
+                        "impresso_langident_pipeline",
+                        LangIdentPipeline,
+                    )
+                    kwargs = self._langident_pipeline_kwargs()
+                    log.info(
+                        "Initializing impresso_langident_pipeline for %s with"
+                        " kwargs=%s local_files_only=%s",
+                        self.infile,
+                        kwargs,
+                        self.local_files_only,
+                    )
+                    models["impresso_langident_pipeline"] = LangIdentPipeline(**kwargs)
+                    log.info(
+                        "Successfully loaded impresso_langident_pipeline model for %s",
+                        self.infile,
+                    )
+                except Exception as e:
+                    self._abort_for_required_pipeline(
+                        "impresso_langident_pipeline",
+                        f"initialization failed: {e}",
+                    )
+
+        if "lingua" in self.lids:
+            if not LINGUA_AVAILABLE:
+                log.warning("lingua package not available for %s", self.infile)
+            else:
+                try:
+                    models["lingua"] = (
+                        LanguageDetectorBuilder.from_all_languages().build()
+                    )
+                    log.info("Successfully loaded lingua model for %s", self.infile)
+                except Exception as e:
+                    log.error("Failed to load lingua model for %s: %s", self.infile, e)
+
+        for lid_system in self.lids:
+            if lid_system not in {
+                "langdetect",
+                "langid",
+                "impresso_ft",
+                "wp_ft",
+                "impresso_langident_pipeline",
+                "lingua",
+            }:
+                log.warning(
+                    "Unknown LID system %s when processing %s",
+                    lid_system,
+                    self.infile,
                 )
 
         return models
+
+    def _initialize_ocrqa_model(self):
+        """Initialize the OCR QA pipeline if requested."""
+        if not self.ocrqa:
+            return None
+
+        if not self._can_initialize_ocrqa():
+            self._abort_for_required_pipeline(
+                "ocrqa",
+                "missing optional dependency impresso_pipelines.ocrqa",
+            )
+
+        self._ensure_local_files_only_supported("ocrqa", OCRQAPipeline)
+        kwargs = self._ocrqa_pipeline_kwargs()
+        log.info(
+            "Initializing OCR QA for %s with repo_id=%s revision=%s"
+            " local_files_only=%s kwargs=%s",
+            self.infile,
+            self.ocrqa_repo,
+            self.ocrqa_version,
+            self.local_files_only,
+            kwargs,
+        )
+
+        try:
+            model = OCRQAPipeline(**kwargs)
+            log.info(
+                "Successfully loaded OCR QA pipeline for %s (repo: %s, version: %s)",
+                self.infile,
+                self.ocrqa_repo,
+                self.ocrqa_version,
+            )
+            return model
+        except Exception as e:
+            self._abort_for_required_pipeline(
+                "ocrqa",
+                f"initialization failed: {e}",
+            )
 
     def _apply_langdetect(
         self, text: str
@@ -523,13 +620,11 @@ class ImpressoLanguageIdentifierSystems(object):
             ]
             # probabilites are already rounded in the pipeline
             return result
-        except Exception:
-            log.error(
-                "IMPRESSO-LANGIDENT-PIPELINE-ERROR for %s: %s",
-                self.infile,
-                sys.exc_info()[0],
+        except Exception as e:
+            self._abort_for_required_pipeline(
+                "impresso_langident_pipeline",
+                f"runtime failure: {e}",
             )
-            return None
 
     def _apply_lingua(
         self, text: str, model
@@ -550,7 +645,9 @@ class ImpressoLanguageIdentifierSystems(object):
             log.error("LINGUA-ERROR for %s: %s", self.infile, sys.exc_info()[0])
             return None
 
-    def _apply_ocrqa_all_languages(self, text: str, model) -> Optional[dict]:
+    def _apply_ocrqa_all_languages(
+        self, text: str, model, item_id: str
+    ) -> Optional[dict]:
         """Apply OCR quality assessment for all supported languages.
 
         :param str text: Text to assess
@@ -574,17 +671,21 @@ class ImpressoLanguageIdentifierSystems(object):
                     log.debug(
                         "OCR QA completed for language %s on content item %s",
                         language,
-                        getattr(self, "_current_item_id", "unknown"),
+                        item_id,
                     )
                 except Exception as e:
-                    log.warning("OCR QA failed for language %s: %s", language, e)
-                    ocrqa_results[language] = None
+                    self._abort_for_required_pipeline(
+                        "ocrqa",
+                        f"runtime failure for language {language} on {item_id}: {e}",
+                    )
 
             return ocrqa_results
 
         except Exception as e:
-            log.error("OCR-QA-ALL-LANGUAGES-ERROR for %s: %s", self.infile, e)
-            return None
+            self._abort_for_required_pipeline(
+                "ocrqa",
+                f"runtime failure: {e}",
+            )
 
     def _create_base_info(self, content_item: dict) -> dict:
         """Create base information dictionary for a content item."""
@@ -678,41 +779,38 @@ class ImpressoLanguageIdentifierSystems(object):
         return "_".join(sorted(max_languages))
 
     def _perform_language_identification(
-        self, text: str, models: dict, jinfo: dict
+        self, text: str, lid_models: dict, jinfo: dict, ocrqa_model=None
     ) -> None:
         """Perform language identification with all configured models."""
-
-        # Store current item ID for OCR QA logging
-        self._current_item_id = jinfo["id"]
 
         # Define model handlers
         model_handlers = {
             "langdetect": lambda: self._apply_langdetect(text),
             "langid": lambda: (
-                self._apply_langid(text, models["langid"])
-                if "langid" in models
+                self._apply_langid(text, lid_models["langid"])
+                if "langid" in lid_models
                 else None
             ),
             "impresso_ft": lambda: (
-                self._apply_fasttext(text, models["impresso_ft"], "impresso_ft")
-                if "impresso_ft" in models
+                self._apply_fasttext(text, lid_models["impresso_ft"], "impresso_ft")
+                if "impresso_ft" in lid_models
                 else None
             ),
             "wp_ft": lambda: (
-                self._apply_fasttext(text, models["wp_ft"], "wp_ft")
-                if "wp_ft" in models
+                self._apply_fasttext(text, lid_models["wp_ft"], "wp_ft")
+                if "wp_ft" in lid_models
                 else None
             ),
             "impresso_langident_pipeline": lambda: (
                 self._apply_impresso_langident_pipeline(
-                    text, models["impresso_langident_pipeline"]
+                    text, lid_models["impresso_langident_pipeline"]
                 )
-                if "impresso_langident_pipeline" in models
+                if "impresso_langident_pipeline" in lid_models
                 else None
             ),
             "lingua": lambda: (
-                self._apply_lingua(text, models["lingua"])
-                if "lingua" in models
+                self._apply_lingua(text, lid_models["lingua"])
+                if "lingua" in lid_models
                 else None
             ),
         }
@@ -745,8 +843,10 @@ class ImpressoLanguageIdentifierSystems(object):
                 jinfo[lid_system] = None
 
         # Apply OCR QA if enabled
-        if self.ocrqa and "ocrqa" in models:
-            ocrqa_result = self._apply_ocrqa_all_languages(text, models["ocrqa"])
+        if ocrqa_model is not None:
+            ocrqa_result = self._apply_ocrqa_all_languages(
+                text, ocrqa_model, jinfo["id"]
+            )
             if ocrqa_result:
                 jinfo["ocrqa"] = ocrqa_result
                 num_languages = len(ocrqa_result)
@@ -774,10 +874,6 @@ class ImpressoLanguageIdentifierSystems(object):
                 jinfo["ocrqa"] = None
                 log.debug("No OCR QA result for %s", jinfo["id"])
                 self.stats["ocrqa_failed"] += 1
-
-        # Clean up temporary variable
-        if hasattr(self, "_current_item_id"):
-            delattr(self, "_current_item_id")
 
     def _check_language_disagreements(self, jinfo: dict) -> None:
         """Check for disagreements between language identifiers and log them."""
@@ -953,7 +1049,15 @@ class ImpressoLanguageIdentifierSystems(object):
 
     def language_identification(self) -> None:
         """Run multiple language identifications with the models provided and update results."""
-        models = self._initialize_models()
+        self._log_local_files_only_mode()
+        lid_models = self._initialize_lid_models()
+        ocrqa_model = self._initialize_ocrqa_model()
+        log.info(
+            "Initialization summary for %s: LID models=%s OCRQA=%s",
+            self.infile,
+            sorted(lid_models.keys()),
+            "enabled" if ocrqa_model is not None else "disabled",
+        )
         jinfo = {}
         for content_item in self.next_contentitem():
             log.debug("WORKING ON %s", content_item["id"])
@@ -999,7 +1103,9 @@ class ImpressoLanguageIdentifierSystems(object):
                     continue
 
                 # Text is valid for language identification
-                self._perform_language_identification(text, models, jinfo)
+                self._perform_language_identification(
+                    text, lid_models, jinfo, ocrqa_model=ocrqa_model
+                )
 
                 # Check for disagreements between language identifiers
                 self._check_language_disagreements(jinfo)
@@ -1496,11 +1602,11 @@ def main():
         ),
     )
     parser.add_argument(
-        "--hf-cache-only",
+        "--local-files-only",
         action="store_true",
         help=(
-            "Prefer already cached Hugging Face assets when supported by the"
-            " downstream impresso_pipelines models."
+            "Load Hugging Face-backed pipeline assets from local files only when"
+            " supported by the downstream impresso_pipelines models."
         ),
     )
 
@@ -1531,7 +1637,7 @@ def main():
         ocrqa=arguments.ocrqa,
         ocrqa_repo=arguments.ocrqa_repo,
         ocrqa_version=arguments.ocrqa_version,
-        hf_cache_only=arguments.hf_cache_only,
+        local_files_only=arguments.local_files_only,
     )
     processor.run()
 

@@ -173,21 +173,20 @@ The OCRQA scores are included in the output JSON and provide quality estimates
 for the OCR text in each language. The scores range from 0 to 1, with higher
 values indicating better estimated OCR quality.
 
-#### Prefer Cached Hugging Face Models
+#### Use Local Hugging Face Files Only
 
-When the downstream `impresso-pipelines` package supports cache-only model
-loading, Stage 1 can be instructed to prefer already cached Hugging Face assets
+When the downstream `impresso-pipelines` package supports local-files-only model
+loading, Stage 1 can be instructed to use already cached Hugging Face assets
 instead of contacting the Hub during model initialization.
 
 ```sh
-# Prefer cached Hugging Face assets for Stage 1 model initialization
-make langident-target LANGIDENT_HF_CACHE_ONLY_OPTION="--hf-cache-only"
+# Use local Hugging Face files only for Stage 1 model initialization
+make langident-target LANGIDENT_LOCAL_FILES_ONLY_OPTION="--local-files-only"
 ```
 
 This is mainly useful for highly parallel runs after the Hugging Face cache has
-been warmed once in advance. If the installed downstream `impresso-pipelines`
-version does not yet support cache-only loading, the flag is ignored by the
-Stage 1 Python script with a warning.
+been warmed once in advance. The flag is passed through to the downstream
+`impresso-pipelines` constructors as `local_files_only`.
 
 For processing a single newspaper:
 
