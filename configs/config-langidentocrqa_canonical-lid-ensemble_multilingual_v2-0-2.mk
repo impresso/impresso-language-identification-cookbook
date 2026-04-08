@@ -1,6 +1,8 @@
 # Derived from impresso_ensemble_lid.py run logged on 2025-09-04 02:29:35
 USE_CANONICAL ?= 1
 NEWSPAPER_HAS_PROVIDER ?= 1
+# requires setup if active
+LANGIDENT_HF_CACHE_ONLY_OPTION ?= --hf-cache-only
 NEWSPAPER_JOBS=6
 # NEWSPAPER_FNMATCH ?= LeTemps/*
 S3_BUCKET_CANONICAL ?= 112-canonical-final

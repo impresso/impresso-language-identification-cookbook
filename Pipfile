@@ -17,8 +17,9 @@ smart-open= {extras = ["s3","http"], version = "==6.4"}
 lingua-language-detector = "*"
 jsonschema = ">=4.17.0,<5"
 types-jsonschema = "*"
+huggingface-hub ="*"
 impresso-cookbook = {file = "cookbook/lib", editable = true}
-impresso-pipelines = {git = "https://github.com/impresso/impresso-pipelines.git", extras = ["langident","ocrqa"]}
+impresso-pipelines = {git = "https://github.com/impresso/impresso-pipelines.git", ref = "hf-cache-friendly", extras = ["langident","ocrqa"]}
 aws2 = "*"
 
 [requires]

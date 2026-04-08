@@ -62,7 +62,7 @@ include cookbook/make_settings.mk
 # SETUP SETTINGS AND TARGETS
 include cookbook/setup.mk
 include cookbook/setup_python.mk
-#include cookbook/setup_langident.mk
+include cookbook/setup_langident.mk
 
 # Load newspaper list configuration and processing rules
 include cookbook/newspaper_list.mk

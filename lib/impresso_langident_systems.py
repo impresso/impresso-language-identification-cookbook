@@ -64,6 +64,7 @@ Example usage:
 __version__ = "2025.06.21"
 
 import json
+import inspect
 import logging
 import re
 import sys
@@ -262,6 +263,7 @@ class ImpressoLanguageIdentifierSystems(object):
         ocrqa: bool = False,
         ocrqa_repo: str = None,
         ocrqa_version: str = "main",
+        hf_cache_only: bool = False,
     ):
 
         self.infile: str = infile
@@ -275,6 +277,7 @@ class ImpressoLanguageIdentifierSystems(object):
         self.ocrqa: bool = ocrqa
         self.ocrqa_repo: str = ocrqa_repo
         self.ocrqa_version: str = ocrqa_version
+        self.hf_cache_only: bool = hf_cache_only
 
         # Validate that issue_file is provided for canonical format
         if self.format == "canonical" and not self.issue_file:
@@ -349,6 +352,29 @@ class ImpressoLanguageIdentifierSystems(object):
 
         log.info("Initializing models for input file: %s", self.infile)
 
+        def build_pipeline_kwargs(constructor, **kwargs):
+            """Keep only keyword arguments supported by a pipeline constructor."""
+            signature = inspect.signature(constructor)
+            parameters = signature.parameters
+            supported_kwargs = {
+                key: value
+                for key, value in kwargs.items()
+                if value is not None and key in parameters
+            }
+            if self.hf_cache_only:
+                if "hf_cache_only" in parameters:
+                    supported_kwargs["hf_cache_only"] = True
+                elif "local_files_only" in parameters:
+                    supported_kwargs["local_files_only"] = True
+                else:
+                    log.warning(
+                        "HF cache-only mode requested for %s, but %s does not"
+                        " support hf_cache_only/local_files_only; ignoring flag.",
+                        self.infile,
+                        constructor.__name__,
+                    )
+            return supported_kwargs
+
         # Define model initializers
         model_initializers = {
             "langid": lambda: langid.LanguageIdentifier.from_modelstring(
@@ -359,7 +385,9 @@ class ImpressoLanguageIdentifierSystems(object):
             ),
             "wp_ft": lambda: fasttext.load_model(self.wp_ft) if self.wp_ft else None,
             "impresso_langident_pipeline": lambda: (
-                LangIdentPipeline() if IMPRESSO_LANGIDENT_PIPELINE_AVAILABLE else None
+                LangIdentPipeline(**build_pipeline_kwargs(LangIdentPipeline))
+                if IMPRESSO_LANGIDENT_PIPELINE_AVAILABLE
+                else None
             ),
             "lingua": lambda: (
                 LanguageDetectorBuilder.from_all_languages().build()
@@ -372,7 +400,11 @@ class ImpressoLanguageIdentifierSystems(object):
         if self.ocrqa:
             try:
                 models["ocrqa"] = OCRQAPipeline(
-                    repo_id=self.ocrqa_repo, revision=self.ocrqa_version
+                    **build_pipeline_kwargs(
+                        OCRQAPipeline,
+                        repo_id=self.ocrqa_repo,
+                        revision=self.ocrqa_version,
+                    )
                 )
                 log.info(
                     "Successfully loaded OCR QA pipeline for %s (repo: %s,"
@@ -1463,6 +1495,14 @@ def main():
             " (default: %(default)s)"
         ),
     )
+    parser.add_argument(
+        "--hf-cache-only",
+        action="store_true",
+        help=(
+            "Prefer already cached Hugging Face assets when supported by the"
+            " downstream impresso_pipelines models."
+        ),
+    )
 
     arguments = parser.parse_args()
 
@@ -1491,6 +1531,7 @@ def main():
         ocrqa=arguments.ocrqa,
         ocrqa_repo=arguments.ocrqa_repo,
         ocrqa_version=arguments.ocrqa_version,
+        hf_cache_only=arguments.hf_cache_only,
     )
     processor.run()
 
