@@ -419,6 +419,187 @@ make collection COLLECTION_JOBS=N
 For distributed processing across multiple machines, simply run the same command
 on each machine - the cookbook automatically coordinates work distribution.
 
+### Work-In-Progress (WIP) Locking Mechanism
+
+The pipeline implements a distributed locking mechanism using S3-based WIP files to prevent
+multiple machines from processing the same target simultaneously. This ensures safe concurrent
+processing without race conditions or duplicate work.
+
+#### How WIP Locking Works
+
+When a machine begins processing a target (e.g., `NEWSPAPER-YEAR.jsonl.bz2`), it:
+
+1. **Checks S3**: Verifies if the final output already exists
+2. **Checks for WIP lock**: Looks for an active `.wip` file indicating another worker is processing
+3. **Acquires WIP lock**: Creates a `.wip` file with metadata (hostname, IP, username, PID, timestamp)
+4. **Processes data**: Runs the actual computation
+5. **Uploads results**: Pushes output files to S3
+6. **Releases WIP lock**: Removes the `.wip` file
+
+**WIP file metadata example** (`WTCH-1828.jsonl.bz2.wip`):
+
+```json
+{
+  "hostname": "compute-node-03",
+  "ip_address": "192.168.1.15",
+  "username": "researcher",
+  "pid": 12345,
+  "start_time": "2026-04-09T02:40:00Z",
+  "target": "s3://bucket/langident/WTCH-1828.jsonl.bz2",
+  "files": ["WTCH-1828.jsonl.bz2", "WTCH-1828.jsonl.bz2.log.gz"]
+}
+```
+
+#### Exit Codes and Skip Behavior
+
+The WIP acquisition returns specific exit codes that Make interprets:
+
+- **0 (acquired)**: Lock acquired successfully, processing proceeds
+- **2 (output exists)**: S3 output already exists, skip processing gracefully
+- **3 (locked)**: Another worker owns the lock, skip processing gracefully
+
+When a target is skipped (exit codes 2 or 3), Make reports success but **no local file is built**.
+The build system emits a WARNING log message identifying which local target was not built:
+
+```
+WARNING: Skipping build attempt for s3://.../WTCH-1828.jsonl.bz2 (active WIP lock exists);
+         local target build.d/.../WTCH-1828.jsonl.bz2 was not built in this invocation
+```
+
+This is **intentional** in distributed processing: success means "no error occurred," not "local
+artifact was created." Machines skip work that's already done or in-progress elsewhere.
+
+#### Stale Lock Detection and Cleanup
+
+WIP locks include automatic staleness detection to handle crashed workers:
+
+- **Default max age**: 1 hour (configurable via `LANGIDENT_WIP_MAX_AGE`)
+- **Stale detection**: If a WIP file is older than max age, it's automatically removed
+- **Automatic cleanup**: Before checking for active locks, stale WIPs are cleaned up
+
+Configure stale lock timeout:
+
+```sh
+# Set WIP max age to 2 hours
+make langident-target LANGIDENT_WIP_MAX_AGE=2
+
+# Set WIP max age to 6 minutes (0.1 hours) for testing
+make langident-target LANGIDENT_WIP_MAX_AGE=0.1
+```
+
+#### Per-Stage WIP Locking
+
+Each pipeline stage uses WIP locks at different granularity:
+
+- **Stage 1 (Systems)**: Per-year lock (e.g., `WTCH-1828.jsonl.bz2.wip`)
+  - Prevents multiple workers from computing the same year's LID predictions
+- **Stage 2 (Statistics)**: Per-newspaper lock (e.g., `stats.json.wip`)
+  - Waits until all Stage 1 yearly files exist and are unlocked
+  - Prevents concurrent statistics computation for the same newspaper
+- **Stage 3 (Ensemble)**: Per-year lock (e.g., `WTCH-1828.jsonl.bz2.wip`)
+  - Waits until Stage 1 yearly file and Stage 2 stats.json exist and are unlocked
+  - Prevents concurrent ensemble decisions for the same year
+
+#### Readiness Checks
+
+Before acquiring WIP locks, the pipeline performs readiness checks:
+
+**Stage 2 readiness** (`scripts/check_stage1_newspaper_ready.py`):
+
+- Verifies all Stage 1 yearly outputs exist on S3
+- Ensures no active WIP locks on Stage 1 files
+- Exits gracefully if dependencies are not yet satisfied
+
+**Stage 3 readiness** (`scripts/check_ensemble_year_ready.py`):
+
+- Verifies Stage 1 yearly output exists on S3
+- Verifies Stage 2 stats.json exists on S3
+- Ensures no active WIP locks on dependencies
+- Exits gracefully if dependencies are not yet satisfied
+
+When readiness checks fail, the build system emits a WARNING and exits successfully,
+allowing Make to proceed with other independent targets.
+
+### Force Upload and Overwrite Mechanism
+
+By default, the pipeline uses **conservative upload behavior** that's safe for distributed processing:
+
+- **Stage 1**: Uploads computed results (canonical always uploads; rebuilt creates stamps)
+- **Stage 2**: Creates stamp files, only uploads if `LANGIDENT_UPLOAD_IF_NEWER_OPTION` is set
+- **Stage 3**: Uploads by default, but `LANGIDENT_UPLOAD_IF_NEWER_OPTION` can control it
+
+However, when you need to **force regeneration and upload** of results (e.g., after algorithm
+changes, bug fixes, or parameter tuning), you can enable force-overwrite mode.
+
+#### Force Upload Configuration
+
+Set force-upload per stage in your config file or on the command line:
+
+```sh
+# Force upload Stage 3 ensemble results (DANGER: overwrites S3)
+make langident-target LANGIDENT_FORCE_UPLOAD_STAGE3_OPTION="--force-overwrite"
+
+# Force upload all three stages
+make langident-target \
+    LANGIDENT_FORCE_UPLOAD_STAGE1_OPTION="--force-overwrite" \
+    LANGIDENT_FORCE_UPLOAD_STAGE2_OPTION="--force-overwrite" \
+    LANGIDENT_FORCE_UPLOAD_STAGE3_OPTION="--force-overwrite"
+```
+
+Or in your config file (e.g., `configs/config-force-reprocess.mk`):
+
+```makefile
+# Force reprocessing and upload of all stages
+LANGIDENT_FORCE_UPLOAD_STAGE1_OPTION := --force-overwrite
+LANGIDENT_FORCE_UPLOAD_STAGE2_OPTION := --force-overwrite
+LANGIDENT_FORCE_UPLOAD_STAGE3_OPTION := --force-overwrite
+```
+
+#### How Force Upload Works
+
+When force-upload is enabled for a stage:
+
+1. **WIP acquisition bypasses existence check**: Sets `--force` flag, allowing lock acquisition
+   even when S3 output already exists
+2. **Processing executes**: Computation runs regardless of existing S3 files
+3. **Upload overwrites**: Uses `--force-overwrite` flag to replace existing S3 content
+
+**Without force-upload** (default):
+
+```
+S3 output exists? → Skip (exit 2) → No local build → Move to next target
+```
+
+**With force-upload** (when `LANGIDENT_FORCE_UPLOAD_STAGEN_OPTION="--force-overwrite"`):
+
+```
+S3 output exists? → Ignored → Acquire WIP lock → Compute → Upload (overwrite) → Release lock
+```
+
+#### When to Use Force Upload
+
+**✅ Safe scenarios for force-upload:**
+
+- Single-machine reprocessing (no concurrent workers)
+- Explicit regeneration after algorithm changes
+- Fixing incorrect results from previous runs
+- Controlled updates when you explicitly want to replace S3 content
+
+**❌ Dangerous scenarios (avoid force-upload):**
+
+- Multi-machine distributed processing (causes conflicts and wasted computation)
+- Normal production runs (defeats the purpose of distributed coordination)
+- When you're unsure if other workers are active
+
+#### Default Behavior is Safe
+
+**Important**: All force-upload options default to **empty** (disabled), making the default
+behavior safe for distributed processing. You must explicitly opt-in to force-overwrite mode,
+acknowledging the risks.
+
+The combination of WIP locking and conservative upload behavior allows multiple machines to
+safely collaborate on processing without coordination beyond shared S3 access.
+
 ## Language Identification from Canonical Pages
 
 When we compute the language identification from canonical pages, we use the same
