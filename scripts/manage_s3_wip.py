@@ -52,6 +52,14 @@ def main() -> None:
         help="Optional local target path that this lock acquisition guards.",
         metavar="PATH",
     )
+    acquire_parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Force lock acquisition even if S3 output already exists (for"
+            " --force-overwrite scenarios)."
+        ),
+    )
 
     release_parser = subparsers.add_parser(
         "release",
@@ -91,6 +99,7 @@ def main() -> None:
                 args.wip_max_age,
                 files=args.files,
                 local_target=args.local_target,
+                force=args.force,
             )
         )
 

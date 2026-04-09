@@ -160,9 +160,24 @@ def acquire_wip_lock(
     wip_max_age: float,
     files: Optional[list[str]] = None,
     local_target: Optional[str] = None,
+    force: bool = False,
 ) -> int:
-    """Acquire a target WIP lock, or return a skip code if unavailable."""
-    if s3_file_exists(s3_client, s3_path):
+    """Acquire a target WIP lock, or return a skip code if unavailable.
+
+    Args:
+        s3_client: Configured S3 client
+        s3_path: S3 target path to protect with WIP lock
+        wip_max_age: Maximum age in hours for stale WIP detection
+        files: Optional list of associated files
+        local_target: Optional local target path for warning messages
+        force: If True, skip the "output already exists" check (for force-overwrite scenarios)
+
+    Returns:
+        EXIT_OK (0) if lock acquired
+        EXIT_OUTPUT_EXISTS (2) if output exists and force=False
+        EXIT_LOCKED (3) if another worker has the lock
+    """
+    if not force and s3_file_exists(s3_client, s3_path):
         log.info("S3 output already exists: %s", s3_path)
         warn_skipped_build_attempt("output already exists on S3", s3_path, local_target)
         return EXIT_OUTPUT_EXISTS
