@@ -1296,8 +1296,15 @@ class ImpressoLanguageIdentifierSystems(object):
                             metadata = content_item["m"]
                             content_item_id = metadata.get("id")
                             if content_item_id:
+                                orig_lg = metadata.get("lg")
+                                log.debug(
+                                    "Read orig_lg from issue metadata: "
+                                    "content_item_id=%s orig_lg=%s",
+                                    content_item_id,
+                                    orig_lg,
+                                )
                                 content_item_metadata[content_item_id] = {
-                                    "orig_lg": metadata.get("lg"),
+                                    "orig_lg": orig_lg,
                                     "tp": metadata.get("tp", "article"),
                                     "title": metadata.get("t"),
                                     "pages": metadata.get("pp", []),
