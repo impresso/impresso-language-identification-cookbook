@@ -10,10 +10,10 @@ NEWSPAPER_JOBS=6
 
 # Default canonical bucket for production canonical data.
 # Override with S3_BUCKET_CANONICAL=111-canonical-staging for staging radio tests.
-S3_BUCKET_CANONICAL ?= 112-canonical-final
+S3_BUCKET_CANONICAL ?= 111-canonical-staging
 S3_PREFIX_NEWSPAPERS_TO_PROCESS_BUCKET ?= $(S3_BUCKET_CANONICAL)
-S3_BUCKET_LANGIDENT_STAGE1 ?= 115-canonical-processed-final
-S3_BUCKET_LANGIDENT ?= 115-canonical-processed-final
+S3_BUCKET_LANGIDENT_STAGE1 ?= 114-canonical-processed-staging
+S3_BUCKET_LANGIDENT ?= 114-canonical-processed-staging
 
 RUN_VERSION_LANGIDENT ?= v2-0-3
 CONSOLIDATEDCANONICAL_VALIDATE_OPTION ?= --validate
