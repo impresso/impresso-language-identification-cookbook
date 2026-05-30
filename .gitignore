@@ -36,3 +36,8 @@ config.local.mk
 .aws
 huggingface
 callgrind.out.*
+scratch.sh
+comparison.jq
+out.tctx
+out.txt
+test*
