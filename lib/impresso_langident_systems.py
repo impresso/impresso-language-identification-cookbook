@@ -15,7 +15,8 @@ of results from different LID systems including:
 
 The module supports multiple input formats:
 - **Rebuilt format**: Traditional impresso content item format (JSONL with content items)
-- **Canonical format**: Impresso canonical page schema format (requires issue metadata file)
+- **Canonical format**: Impresso canonical page or audio record schema format
+  (requires issue metadata file)
 
 Additional capabilities:
 - **OCR Quality Assessment**: Optional evaluation of OCR quality for all supported languages
@@ -28,7 +29,7 @@ side-by-side in the output for comparison.
 
 Key features:
 - Parallel execution of multiple LID systems on the same content items
-- Support for both rebuilt and canonical page formats
+- Support for rebuilt and canonical page/audio formats
 - Configurable text length and alphabetical ratio thresholds
 - Support for variable number of LID models (from 1 to all available)
 - Robust error handling for individual models
@@ -264,6 +265,7 @@ class ImpressoLanguageIdentifierSystems(object):
         ocrqa_repo: str = None,
         ocrqa_version: str = "main",
         local_files_only: bool = False,
+        canonical_input_kind: str = "pages",
     ):
 
         self.infile: str = infile
@@ -278,10 +280,14 @@ class ImpressoLanguageIdentifierSystems(object):
         self.ocrqa_repo: str = ocrqa_repo
         self.ocrqa_version: str = ocrqa_version
         self.local_files_only: bool = local_files_only
+        self.canonical_input_kind: str = canonical_input_kind
 
         # Validate that issue_file is provided for canonical format
         if self.format == "canonical" and not self.issue_file:
             raise ValueError("issue_file must be provided when using canonical format")
+
+        if self.canonical_input_kind not in {"pages", "audios"}:
+            raise ValueError("canonical_input_kind must be one of: pages, audios")
 
         # Validate that impresso_pipelines.ocrqa is available if ocrqa is requested
         if self.ocrqa and not IMPRESSO_OCRQA_AVAILABLE:
@@ -1262,6 +1268,37 @@ class ImpressoLanguageIdentifierSystems(object):
 
         return content_items
 
+    def _extract_text_from_audio_record(self, audio_data: dict) -> Dict[str, str]:
+        """Extract text from a canonical audio record, grouped by content item ID.
+
+        :param dict audio_data: Audio record data in canonical format
+        :return: Dictionary mapping content item IDs to their text content
+        :rtype: Dict[str, str]
+        """
+        content_items = {}
+
+        for section in audio_data.get("s", []):
+            content_item_id = section.get("pOf")
+            if not content_item_id:
+                continue
+
+            section_tokens = []
+            for utterance in section.get("u", []):
+                for speech_segment in utterance.get("ss", []):
+                    for token in speech_segment.get("t", []):
+                        token_text = token.get("tx")
+                        if token_text:
+                            section_tokens.append(token_text)
+
+            if section_tokens:
+                section_text = " ".join(section_tokens)
+                if content_item_id in content_items:
+                    content_items[content_item_id] += " " + section_text
+                else:
+                    content_items[content_item_id] = section_text
+
+        return content_items
+
     def _load_content_item_metadata(self) -> Dict[str, dict]:
         """Load content item metadata from issue file.
 
@@ -1308,6 +1345,8 @@ class ImpressoLanguageIdentifierSystems(object):
                                     "tp": metadata.get("tp", "article"),
                                     "title": metadata.get("t"),
                                     "pages": metadata.get("pp", []),
+                                    "records": metadata.get("rr", []),
+                                    "speakers": metadata.get("speakers", []),
                                 }
 
         log.info(
@@ -1319,7 +1358,7 @@ class ImpressoLanguageIdentifierSystems(object):
         return content_item_metadata
 
     def _build_content_items_from_canonical(self) -> Dict[str, dict]:
-        """Build content items dictionary from canonical format pages.
+        """Build content items dictionary from canonical page or audio records.
 
         :return: Dictionary mapping content item IDs to content item objects
         :rtype: Dict[str, dict]
@@ -1337,62 +1376,78 @@ class ImpressoLanguageIdentifierSystems(object):
             bucket_name, prefix = s3_path.split("/", 1)
 
             # Use yield_s3_objects to get all matching files
-            page_files = []
+            input_files = []
             for key in yield_s3_objects(bucket_name, prefix):
                 if key.endswith(".jsonl.bz2"):
-                    page_files.append(f"s3://{bucket_name}/{key}")
+                    input_files.append(f"s3://{bucket_name}/{key}")
 
             log.info(
                 "Found %d files matching prefix %s",
-                len(page_files),
+                len(input_files),
                 self.infile,
             )
 
-            if not page_files:
+            if not input_files:
                 log.warning("No files found matching S3 prefix: %s", self.infile)
                 return content_items
         else:
             # Single file or local file
-            page_files = [self.infile]
+            input_files = [self.infile]
 
-        # Process each page file
-        for page_file in page_files:
-            log.info("Processing page file: %s", page_file)
+        # Process each canonical input file
+        for input_file in input_files:
+            log.info(
+                "Processing canonical %s file: %s",
+                self.canonical_input_kind,
+                input_file,
+            )
 
-            if page_file.startswith("s3://"):
+            if input_file.startswith("s3://"):
                 transport_params = {"client": self.s3_client}
             else:
                 transport_params = {}
 
             try:
                 with smart_open.open(
-                    page_file, transport_params=transport_params, encoding="utf-8"
+                    input_file, transport_params=transport_params, encoding="utf-8"
                 ) as reader:
                     for line in reader:
                         if not line.strip():
                             continue
 
-                        page_data = json.loads(line)
-                        page_content_items = self._extract_text_from_page(page_data)
+                        input_data = json.loads(line)
+                        if self.canonical_input_kind == "audios":
+                            extracted_content_items = (
+                                self._extract_text_from_audio_record(input_data)
+                            )
+                        else:
+                            extracted_content_items = self._extract_text_from_page(
+                                input_data
+                            )
 
-                        for content_item_id, text in page_content_items.items():
+                        for content_item_id, text in extracted_content_items.items():
                             if content_item_id in content_items:
-                                # Append text from this page to existing content item
+                                # Append text from this record to existing content item
                                 content_items[content_item_id]["ft"] += " " + text
                             else:
                                 # Create new content item with metadata from issue file
                                 metadata = content_item_metadata.get(
                                     content_item_id, {}
                                 )
+                                default_type = (
+                                    "radio_broadcast_episode"
+                                    if self.canonical_input_kind == "audios"
+                                    else "article"
+                                )
                                 content_items[content_item_id] = {
                                     "id": content_item_id,
                                     "ft": text,
-                                    "tp": metadata.get("tp", "article"),
+                                    "tp": metadata.get("tp", default_type),
                                     "lg": metadata.get("orig_lg"),
                                 }
 
             except Exception as e:
-                log.error("Error processing page file %s: %s", page_file, e)
+                log.error("Error processing canonical file %s: %s", input_file, e)
                 continue
 
         # Clean up text for all content items
@@ -1400,9 +1455,10 @@ class ImpressoLanguageIdentifierSystems(object):
             content_item["ft"] = " ".join(content_item["ft"].split())
 
         log.info(
-            "Extracted %d content items from %d page files with prefix %s",
+            "Extracted %d content items from %d canonical %s files with prefix %s",
             len(content_items),
-            len(page_files),
+            len(input_files),
+            self.canonical_input_kind,
             self.infile,
         )
 
@@ -1411,7 +1467,7 @@ class ImpressoLanguageIdentifierSystems(object):
     def next_contentitem(self) -> Iterable[dict]:
         """Yield each content item from the input file."""
         if self.format == "canonical":
-            # For canonical format, first build all content items from pages
+            # For canonical format, first build all content items from records.
             content_items = self._build_content_items_from_canonical()
             for content_item in content_items.values():
                 yield content_item
@@ -1469,6 +1525,15 @@ def main():
         help=(
             "input format type: 'rebuilt' for traditional format or 'canonical' for"
             " page schema format (default %(default)s)"
+        ),
+    )
+    parser.add_argument(
+        "--canonical-input-kind",
+        choices=["pages", "audios"],
+        default="pages",
+        help=(
+            "canonical record kind to read when --format=canonical: pages or audios "
+            "(default %(default)s)"
         ),
     )
 
@@ -1645,6 +1710,7 @@ def main():
         ocrqa_repo=arguments.ocrqa_repo,
         ocrqa_version=arguments.ocrqa_version,
         local_files_only=arguments.local_files_only,
+        canonical_input_kind=arguments.canonical_input_kind,
     )
     processor.run()
 
