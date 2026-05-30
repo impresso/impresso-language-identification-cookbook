@@ -40,4 +40,13 @@ scratch.sh
 comparison.jq
 out.tctx
 out.txt
+transform.jq
+sample.jsonl
 test*
+# Local dev directories / symlinks
+.vscode/
+AUTO-INTEGRATION.md
+audio-schema-review.md
+delete_commands.sh
+impresso-consolidated-canonical-cookbook
+impresso-schemas
