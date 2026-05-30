@@ -8,7 +8,7 @@ verify_ssl = true
 [packages]
 python-dotenv = "*"
 boto3 = "==1.35.95"
-urllib3 = ">=2.6.3"
+urllib3 = ">=2.7.0"
 langid = "*"
 langdetect = "*"
 fasttext = "*"
@@ -19,7 +19,7 @@ jsonschema = ">=4.17.0,<5"
 types-jsonschema = "*"
 huggingface-hub ="*"
 impresso-cookbook = {file = "cookbook/lib", editable = true}
-impresso-pipelines = {git = "https://github.com/impresso/impresso-pipelines.git", ref = "hf-cache-friendly", extras = ["langident","ocrqa"]}
+impresso-pipelines = {git = "https://github.com/impresso/impresso-pipelines.git", ref = "main", extras = ["langident","ocrqa"]}
 aws2 = "*"
 
 [requires]
