@@ -428,7 +428,7 @@
                 "sha256:fdfef35d751d510fcef5252703621574364fec16418c4a1e5e1055248401054b"
             ],
             "markers": "python_version >= '3.9' and python_full_version not in '3.9.0, 3.9.1'",
-            "version": "==48.0.0"
+            "version": ">=50.0.0"
         },
         "cython": {
             "hashes": [
