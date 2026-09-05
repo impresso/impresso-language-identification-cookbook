@@ -1282,7 +1282,7 @@
                 "sha256:a59e362652f08dcd477c78bb6e7bd9d80a7995bc73ce773050228a348ce2e5bb"
             ],
             "markers": "python_version >= '3.9'",
-            "version": "==82.0.1"
+            "version": ">=83.0.0"
         },
         "shellingham": {
             "hashes": [
