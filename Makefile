@@ -23,7 +23,7 @@ include cookbook/log.mk
 CONFIG_LOCAL_MAKE ?= config.local.mk
 ifdef CFG
   CONFIG_LOCAL_MAKE := $(CFG)
-  $(info Overriding CONFIG_LOCAL_MAKE to $(CONFIG_LOCAL_MAKE) from CFG variable)
+  $(info # Overriding CONFIG_LOCAL_MAKE to $(CONFIG_LOCAL_MAKE) from CFG variable)
 else
   $(call log.info, CONFIG_LOCAL_MAKE)
 endif
