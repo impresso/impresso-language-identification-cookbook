@@ -334,6 +334,27 @@ class ImpressoLanguageIdentifierEnsemble:
                 result[lid_system] = lid_preds[0]
         return result
 
+    def get_orig_lg_vote(
+        self, content_item: Dict[str, Any]
+    ) -> Optional[Tuple[str, float]]:
+        """Return the vote of a trusted original language of an image caption.
+
+        The vote is weighted by the support of the language in the newspaper.
+
+        :param Dict[str, Any] content_item: Content item after the orig_lg trust check.
+        :return: Language and vote score, or None if there is no such vote.
+        :rtype: Optional[Tuple[str, float]]
+        """
+        orig_lg = content_item.get("orig_lg")
+        if content_item["tp"] != "image" or not orig_lg:
+            return None
+        lang = orig_lg[0]["lang"]
+        if self.admissible_languages is not None and (
+            lang not in self.admissible_languages
+        ):
+            return None
+        return lang, float(orig_lg[0]["prob"])
+
     def get_votes(self, content_item: Dict[str, Any]) -> Dict[str, float]:
         """Return dictionary with weighted votes per language.
 
@@ -516,6 +537,10 @@ class ImpressoLanguageIdentifierEnsemble:
                         lid,
                     )
 
+        orig_lg_vote = self.get_orig_lg_vote(content_item)
+        if orig_lg_vote:
+            votes[orig_lg_vote[0]].append(("orig_lg", orig_lg_vote[1]))
+
         # Aggregate the vote scores for each language
         decision: Dict[str, float] = {}
         for lang in votes:
@@ -640,16 +665,6 @@ class ImpressoLanguageIdentifierEnsemble:
                 {"lang": original_lang, "prob": float(orig_lg_support)}
             ]
 
-            # Captions are often too short for the LID systems, so keep their
-            # original language unless it is often wrong in this newspaper
-            if (
-                content_item["tp"] == "image"
-                and orig_lg_support > self.threshold_confidence_orig_lg
-            ):
-                content_item["lg"] = original_lang
-                content_item["lg_decision"] = "orig_lg"
-                return content_item
-
         # rule 2
         all_lid_preds: LidPredictionMap = self.get_best_lid(content_item)
         all_lid_languages: Set[str] = {pred["lang"] for pred in all_lid_preds.values()}
@@ -664,6 +679,17 @@ class ImpressoLanguageIdentifierEnsemble:
             content_item["id"],
             all_lid_languages,
         )
+
+        # Captions are often too short for the LID systems, so the original
+        # language can decide alone if it is reliable enough
+        if not all_lid_languages:
+            orig_lg_vote = self.get_orig_lg_vote(content_item)
+            if orig_lg_vote and orig_lg_vote[1] >= self.minimal_voting_score:
+                lang, score = orig_lg_vote
+                content_item["votes"] = [{"lang": lang, "vote": round(score, 3)}]
+                content_item["lg"] = lang
+                content_item["lg_decision"] = "voting"
+                return content_item
 
         # If no LID predictions at all, use dominant language
         if not all_lid_languages:
