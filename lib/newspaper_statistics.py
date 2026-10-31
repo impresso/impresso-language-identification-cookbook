@@ -554,7 +554,8 @@ class AggregatorLID:
             else:
                 self.contentitem_type_distribution["unknown"] += 1
 
-            if content_type == "img":
+            # Image captions must not influence the newspaper statistics
+            if content_type in ("img", "image"):
                 continue
 
             ci_len_value = ci.get("len", 0)

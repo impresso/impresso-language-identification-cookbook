@@ -588,7 +588,8 @@ class ImpressoLanguageIdentifierEnsemble:
             ),
         }
 
-        if content_item["tp"] == "img":
+        # Images without a caption have no text to decide on
+        if content_item["tp"] in ("img", "image") and not content_item.get("len"):
             return content_item
 
         trust_orig_lg = False
