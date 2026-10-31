@@ -640,6 +640,16 @@ class ImpressoLanguageIdentifierEnsemble:
                 {"lang": original_lang, "prob": float(orig_lg_support)}
             ]
 
+            # Captions are often too short for the LID systems, so keep their
+            # original language unless it is often wrong in this newspaper
+            if (
+                content_item["tp"] == "image"
+                and orig_lg_support > self.threshold_confidence_orig_lg
+            ):
+                content_item["lg"] = original_lang
+                content_item["lg_decision"] = "orig_lg"
+                return content_item
+
         # rule 2
         all_lid_preds: LidPredictionMap = self.get_best_lid(content_item)
         all_lid_languages: Set[str] = {pred["lang"] for pred in all_lid_preds.values()}

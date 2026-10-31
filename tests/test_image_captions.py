@@ -95,3 +95,33 @@ def test_captions_are_excluded_from_newspaper_statistics():
     aggregator.collect_statistics()
     assert aggregator.contentitem_type_distribution == {"image": 1}
     assert not aggregator.content_length_stats
+
+
+def _trusting_ensemble():
+    ensemble = _ensemble()
+    ensemble.newspaper_stats = {
+        "overall_orig_lg_support": 0.98,
+        "dominant_language": "fr",
+        "lg_support": {"orig_lg": {"de": 0.98, "en": 0.5}},
+    }
+    return ensemble
+
+
+def test_trusted_original_language_is_kept_for_captions():
+    decided = _trusting_ensemble().decide_lg(_image(10))
+    assert decided["lg"] == "de"
+    assert decided["lg_decision"] == "orig_lg"
+
+
+def test_unreliable_original_language_is_not_kept_for_captions():
+    image = _image(10)
+    image["orig_lg"] = "en"
+    decided = _trusting_ensemble().decide_lg(image)
+    assert decided["lg"] == "fr"
+    assert decided["lg_decision"] == "dominant-by-lowvote"
+
+
+def test_missing_original_language_falls_back_to_normal_rules():
+    image = _image(10)
+    image["orig_lg"] = None
+    assert _trusting_ensemble().decide_lg(image)["lg"] == "fr"
