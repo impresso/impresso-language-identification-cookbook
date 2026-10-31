@@ -1450,6 +1450,8 @@ class ImpressoLanguageIdentifierSystems(object):
                 log.error("Error processing canonical file %s: %s", input_file, e)
                 continue
 
+        self._add_image_captions(content_items, content_item_metadata)
+
         # Clean up text for all content items
         for content_item in content_items.values():
             content_item["ft"] = " ".join(content_item["ft"].split())
@@ -1463,6 +1465,31 @@ class ImpressoLanguageIdentifierSystems(object):
         )
 
         return content_items
+
+    @staticmethod
+    def _add_image_captions(
+        content_items: Dict[str, dict], content_item_metadata: Dict[str, dict]
+    ) -> None:
+        """Use the caption (``m.t``) as the text of image content items.
+
+        The language of an image item is the language of its caption. Images
+        without a caption are not added.
+
+        :param Dict[str, dict] content_items: Content items, updated in place
+        :param Dict[str, dict] content_item_metadata: Metadata from the issue file
+        """
+        for content_item_id, metadata in content_item_metadata.items():
+            if metadata["tp"] != "image":
+                continue
+            caption = metadata["title"]
+            if not isinstance(caption, str) or not caption.strip():
+                continue
+            content_items[content_item_id] = {
+                "id": content_item_id,
+                "ft": caption,
+                "tp": metadata["tp"],
+                "lg": metadata["orig_lg"],
+            }
 
     def next_contentitem(self) -> Iterable[dict]:
         """Yield each content item from the input file."""
