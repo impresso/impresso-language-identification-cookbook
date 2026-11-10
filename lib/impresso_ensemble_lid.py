@@ -159,6 +159,7 @@ class ImpressoLanguageIdentifierEnsemble:
         alphabetical_ratio_threshold: Optional[float] = None,
         dominant_language_threshold: Optional[float] = None,
         exclude_lb: Optional[Set[str]] = None,
+        image_captions: bool = False,
     ) -> None:
 
         self.git_describe: str = git_describe
@@ -184,6 +185,7 @@ class ImpressoLanguageIdentifierEnsemble:
         self.alphabetical_ratio_threshold: float = alphabetical_ratio_threshold or 0.0
         self.dominant_language_threshold: float = dominant_language_threshold or 0.90
         self.exclude_lb: Set[str] = set(exclude_lb or [])
+        self.image_captions: bool = image_captions
 
         self.schema: Optional[Dict[str, Any]] = None
         self.schema_validator: Optional[Draft6Validator] = None
@@ -346,7 +348,7 @@ class ImpressoLanguageIdentifierEnsemble:
         :rtype: Optional[Tuple[str, float]]
         """
         orig_lg = content_item.get("orig_lg")
-        if content_item["tp"] != "image" or not orig_lg:
+        if not self.image_captions or content_item["tp"] != "image" or not orig_lg:
             return None
         lang = orig_lg[0]["lang"]
         if self.admissible_languages is not None and (
@@ -614,7 +616,11 @@ class ImpressoLanguageIdentifierEnsemble:
         }
 
         # Images without a caption have no text to decide on
-        if content_item["tp"] in ("img", "image") and not content_item.get("len"):
+        if content_item["tp"] == "img" or (
+            self.image_captions
+            and content_item["tp"] == "image"
+            and not content_item.get("len")
+        ):
             return content_item
 
         trust_orig_lg = False
@@ -1116,6 +1122,16 @@ def main() -> None:
         ),
     )
 
+    parser.add_argument(
+        "--image-captions",
+        action="store_true",
+        help=(
+            "Treat image content items as captions (requires Stage 1 run with"
+            " --image-captions). Off by default to keep the behavior of older"
+            " configurations."
+        ),
+    )
+
     arguments = parser.parse_args()
 
     setup_logging(arguments.log_level, arguments.log_file, logger=log)
@@ -1140,6 +1156,7 @@ def main() -> None:
             alphabetical_ratio_threshold=arguments.alphabetical_ratio_threshold,
             dominant_language_threshold=arguments.dominant_language_threshold,
             exclude_lb=set(arguments.exclude_lb),
+            image_captions=arguments.image_captions,
         )
         ensemble.run()
     except Exception as e:

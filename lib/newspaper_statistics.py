@@ -260,7 +260,9 @@ class AggregatorLID:
         admissible_languages: Optional[Set[str]],
         git_describe: str,
         outfile: Optional[str] = None,
+        image_captions: bool = False,
     ):
+        self.image_captions: bool = image_captions
         self.attrs_for_json: List[str] = [
             # configured information
             "newspaper",
@@ -555,7 +557,9 @@ class AggregatorLID:
                 self.contentitem_type_distribution["unknown"] += 1
 
             # Image captions must not influence the newspaper statistics
-            if content_type in ("img", "image"):
+            if content_type == "img" or (
+                self.image_captions and content_type == "image"
+            ):
                 continue
 
             ci_len_value = ci.get("len", 0)
@@ -953,6 +957,16 @@ def main():
         ),
     )
 
+    parser.add_argument(
+        "--image-captions",
+        action="store_true",
+        help=(
+            "Exclude image captions from the newspaper statistics (requires Stage 1"
+            " run with --image-captions). Off by default to keep the behavior of"
+            " older configurations."
+        ),
+    )
+
     arguments = parser.parse_args()
 
     setup_logging(arguments.log_level, arguments.log_file, logger=log)
@@ -973,6 +987,7 @@ def main():
             admissible_languages=arguments.admissible_languages,
             git_describe=arguments.git_describe,
             outfile=arguments.outfile,
+            image_captions=arguments.image_captions,
         )
         aggregator.run()
     except Exception as e:

@@ -56,6 +56,7 @@ def _ensemble():
         ImpressoLanguageIdentifierEnsemble
     )
     ensemble.ts = "2026-10-31T00:00:00Z"
+    ensemble.image_captions = True
     ensemble.git_describe = "test"
     ensemble.threshold_confidence_orig_lg = 0.75
     ensemble.newspaper_stats = {"overall_orig_lg_support": 0.1, "dominant_language": "fr"}
@@ -87,6 +88,7 @@ def test_image_without_text_gets_no_language():
 def test_captions_are_excluded_from_newspaper_statistics():
     aggregator = AggregatorLID.__new__(AggregatorLID)
     aggregator.newspaper = "x"
+    aggregator.image_captions = True
     aggregator.contentitem_type_distribution = Counter()
     aggregator.content_length_stats = Counter()
     aggregator.get_next_contentitem = lambda: iter(
@@ -167,3 +169,29 @@ def test_articles_do_not_get_an_original_language_vote():
     ensemble = _trusting_ensemble()
     ensemble.lids = {"langid", "wp_ft"}
     assert ensemble.decide_lg(article)["lg"] == "fr"
+
+
+# Without --image-captions, the behavior of older configurations is kept
+
+
+def test_without_flag_image_items_get_no_original_language_vote():
+    image = _image(200)
+    image["langid"] = [{"lang": "fr", "prob": 0.9}]
+    image["wp_ft"] = [{"lang": "de", "prob": 0.9}]
+    ensemble = _trusting_ensemble()
+    ensemble.image_captions = False
+    ensemble.lids = {"langid", "wp_ft"}
+    assert ensemble.get_orig_lg_vote(image) is None
+
+
+def test_without_flag_image_items_count_in_newspaper_statistics():
+    aggregator = AggregatorLID.__new__(AggregatorLID)
+    aggregator.newspaper = "x"
+    aggregator.image_captions = False
+    aggregator.contentitem_type_distribution = Counter()
+    aggregator.content_length_stats = Counter()
+    aggregator.get_next_contentitem = lambda: iter(
+        [{"id": "x-1900-01-01-a-i0001", "tp": "image", "len": 100}]
+    )
+    aggregator.collect_statistics()
+    assert aggregator.content_length_stats

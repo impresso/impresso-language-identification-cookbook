@@ -266,6 +266,7 @@ class ImpressoLanguageIdentifierSystems(object):
         ocrqa_version: str = "main",
         local_files_only: bool = False,
         canonical_input_kind: str = "pages",
+        image_captions: bool = False,
     ):
 
         self.infile: str = infile
@@ -281,6 +282,7 @@ class ImpressoLanguageIdentifierSystems(object):
         self.ocrqa_version: str = ocrqa_version
         self.local_files_only: bool = local_files_only
         self.canonical_input_kind: str = canonical_input_kind
+        self.image_captions: bool = image_captions
 
         # Validate that issue_file is provided for canonical format
         if self.format == "canonical" and not self.issue_file:
@@ -1450,7 +1452,8 @@ class ImpressoLanguageIdentifierSystems(object):
                 log.error("Error processing canonical file %s: %s", input_file, e)
                 continue
 
-        self._add_image_captions(content_items, content_item_metadata)
+        if self.image_captions:
+            self._add_image_captions(content_items, content_item_metadata)
 
         # Clean up text for all content items
         for content_item in content_items.values():
@@ -1709,6 +1712,16 @@ def main():
         ),
     )
 
+    parser.add_argument(
+        "--image-captions",
+        action="store_true",
+        help=(
+            "Identify the language of image captions (m.t in the issue file) and"
+            " output captioned images as content items. Off by default to keep the"
+            " behavior of older configurations."
+        ),
+    )
+
     arguments = parser.parse_args()
 
     # Validate format-specific requirements
@@ -1739,6 +1752,7 @@ def main():
             ocrqa_version=arguments.ocrqa_version,
             local_files_only=arguments.local_files_only,
             canonical_input_kind=arguments.canonical_input_kind,
+            image_captions=arguments.image_captions,
         )
         processor.run()
     except Exception as e:
