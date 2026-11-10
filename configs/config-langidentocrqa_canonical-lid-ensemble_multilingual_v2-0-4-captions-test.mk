@@ -1,6 +1,7 @@
 # Test run for language identification of image captions on BNL newspapers.
-# Same options as v2-0-3, but writes to the sandbox buckets under its own run
-# version so that production results stay untouched.
+# Same options as v2-0-3, plus --image-captions (LANGIDENT_IMAGE_CAPTIONS_OPTION),
+# but writes to the sandbox buckets under its own run version so that production
+# results stay untouched.
 #
 # Usage:
 #   make collection \
