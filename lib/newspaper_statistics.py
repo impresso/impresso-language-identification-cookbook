@@ -959,21 +959,25 @@ def main():
 
     log.info("%s", arguments)
 
-    aggregator = AggregatorLID(
-        infile=arguments.infile,
-        newspaper=arguments.newspaper,
-        lids=set(arguments.lids),
-        boosted_lids=set(arguments.boosted_lids),
-        boost_factor=arguments.boost_factor,
-        minimal_vote_score=arguments.minimal_vote_score,
-        minimal_lid_probability=arguments.minimal_lid_probability,
-        minimal_text_length=arguments.minimal_text_length,
-        round_ndigits=arguments.round_ndigits,
-        admissible_languages=arguments.admissible_languages,
-        git_describe=arguments.git_describe,
-        outfile=arguments.outfile,
-    )
-    aggregator.run()
+    try:
+        aggregator = AggregatorLID(
+            infile=arguments.infile,
+            newspaper=arguments.newspaper,
+            lids=set(arguments.lids),
+            boosted_lids=set(arguments.boosted_lids),
+            boost_factor=arguments.boost_factor,
+            minimal_vote_score=arguments.minimal_vote_score,
+            minimal_lid_probability=arguments.minimal_lid_probability,
+            minimal_text_length=arguments.minimal_text_length,
+            round_ndigits=arguments.round_ndigits,
+            admissible_languages=arguments.admissible_languages,
+            git_describe=arguments.git_describe,
+            outfile=arguments.outfile,
+        )
+        aggregator.run()
+    except Exception as e:
+        log.error("Newspaper statistics aggregation failed: %s", e, exc_info=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

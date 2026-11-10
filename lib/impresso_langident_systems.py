@@ -1719,27 +1719,31 @@ def main():
 
     log.info("%s", arguments)
 
-    # Directly call LanguageIdentifier with relevant arguments
-    processor = ImpressoLanguageIdentifierSystems(
-        infile=arguments.infile,
-        outfile=arguments.outfile,
-        impresso_ft=arguments.impresso_ft,
-        wp_ft=arguments.wp_ft,
-        minimal_text_length=arguments.minimal_text_length,
-        lids=arguments.lids,
-        round_ndigits=arguments.round_ndigits,
-        git_describe=arguments.git_describe,
-        alphabetical_ratio_threshold=arguments.alphabetical_ratio_threshold,
-        format=arguments.format,
-        debug=arguments.debug,
-        issue_file=arguments.issue_file,
-        ocrqa=arguments.ocrqa,
-        ocrqa_repo=arguments.ocrqa_repo,
-        ocrqa_version=arguments.ocrqa_version,
-        local_files_only=arguments.local_files_only,
-        canonical_input_kind=arguments.canonical_input_kind,
-    )
-    processor.run()
+    try:
+        # Directly call LanguageIdentifier with relevant arguments
+        processor = ImpressoLanguageIdentifierSystems(
+            infile=arguments.infile,
+            outfile=arguments.outfile,
+            impresso_ft=arguments.impresso_ft,
+            wp_ft=arguments.wp_ft,
+            minimal_text_length=arguments.minimal_text_length,
+            lids=arguments.lids,
+            round_ndigits=arguments.round_ndigits,
+            git_describe=arguments.git_describe,
+            alphabetical_ratio_threshold=arguments.alphabetical_ratio_threshold,
+            format=arguments.format,
+            debug=arguments.debug,
+            issue_file=arguments.issue_file,
+            ocrqa=arguments.ocrqa,
+            ocrqa_repo=arguments.ocrqa_repo,
+            ocrqa_version=arguments.ocrqa_version,
+            local_files_only=arguments.local_files_only,
+            canonical_input_kind=arguments.canonical_input_kind,
+        )
+        processor.run()
+    except Exception as e:
+        log.error("Language identification systems failed: %s", e, exc_info=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
