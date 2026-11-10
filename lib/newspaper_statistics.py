@@ -260,7 +260,9 @@ class AggregatorLID:
         admissible_languages: Optional[Set[str]],
         git_describe: str,
         outfile: Optional[str] = None,
+        image_captions: bool = False,
     ):
+        self.image_captions: bool = image_captions
         self.attrs_for_json: List[str] = [
             # configured information
             "newspaper",
@@ -554,7 +556,10 @@ class AggregatorLID:
             else:
                 self.contentitem_type_distribution["unknown"] += 1
 
-            if content_type == "img":
+            # Image captions must not influence the newspaper statistics
+            if content_type == "img" or (
+                self.image_captions and content_type == "image"
+            ):
                 continue
 
             ci_len_value = ci.get("len", 0)
@@ -952,27 +957,42 @@ def main():
         ),
     )
 
+    parser.add_argument(
+        "--image-captions",
+        action="store_true",
+        help=(
+            "Exclude image captions from the newspaper statistics (requires Stage 1"
+            " run with --image-captions). Off by default to keep the behavior of"
+            " older configurations."
+        ),
+    )
+
     arguments = parser.parse_args()
 
     setup_logging(arguments.log_level, arguments.log_file, logger=log)
 
     log.info("%s", arguments)
 
-    aggregator = AggregatorLID(
-        infile=arguments.infile,
-        newspaper=arguments.newspaper,
-        lids=set(arguments.lids),
-        boosted_lids=set(arguments.boosted_lids),
-        boost_factor=arguments.boost_factor,
-        minimal_vote_score=arguments.minimal_vote_score,
-        minimal_lid_probability=arguments.minimal_lid_probability,
-        minimal_text_length=arguments.minimal_text_length,
-        round_ndigits=arguments.round_ndigits,
-        admissible_languages=arguments.admissible_languages,
-        git_describe=arguments.git_describe,
-        outfile=arguments.outfile,
-    )
-    aggregator.run()
+    try:
+        aggregator = AggregatorLID(
+            infile=arguments.infile,
+            newspaper=arguments.newspaper,
+            lids=set(arguments.lids),
+            boosted_lids=set(arguments.boosted_lids),
+            boost_factor=arguments.boost_factor,
+            minimal_vote_score=arguments.minimal_vote_score,
+            minimal_lid_probability=arguments.minimal_lid_probability,
+            minimal_text_length=arguments.minimal_text_length,
+            round_ndigits=arguments.round_ndigits,
+            admissible_languages=arguments.admissible_languages,
+            git_describe=arguments.git_describe,
+            outfile=arguments.outfile,
+            image_captions=arguments.image_captions,
+        )
+        aggregator.run()
+    except Exception as e:
+        log.error("Newspaper statistics aggregation failed: %s", e, exc_info=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -159,6 +159,7 @@ class ImpressoLanguageIdentifierEnsemble:
         alphabetical_ratio_threshold: Optional[float] = None,
         dominant_language_threshold: Optional[float] = None,
         exclude_lb: Optional[Set[str]] = None,
+        image_captions: bool = False,
     ) -> None:
 
         self.git_describe: str = git_describe
@@ -184,6 +185,7 @@ class ImpressoLanguageIdentifierEnsemble:
         self.alphabetical_ratio_threshold: float = alphabetical_ratio_threshold or 0.0
         self.dominant_language_threshold: float = dominant_language_threshold or 0.90
         self.exclude_lb: Set[str] = set(exclude_lb or [])
+        self.image_captions: bool = image_captions
 
         self.schema: Optional[Dict[str, Any]] = None
         self.schema_validator: Optional[Draft6Validator] = None
@@ -333,6 +335,27 @@ class ImpressoLanguageIdentifierEnsemble:
             if lid_preds:
                 result[lid_system] = lid_preds[0]
         return result
+
+    def get_orig_lg_vote(
+        self, content_item: Dict[str, Any]
+    ) -> Optional[Tuple[str, float]]:
+        """Return the vote of a trusted original language of an image caption.
+
+        The vote is weighted by the support of the language in the newspaper.
+
+        :param Dict[str, Any] content_item: Content item after the orig_lg trust check.
+        :return: Language and vote score, or None if there is no such vote.
+        :rtype: Optional[Tuple[str, float]]
+        """
+        orig_lg = content_item.get("orig_lg")
+        if not self.image_captions or content_item["tp"] != "image" or not orig_lg:
+            return None
+        lang = orig_lg[0]["lang"]
+        if self.admissible_languages is not None and (
+            lang not in self.admissible_languages
+        ):
+            return None
+        return lang, float(orig_lg[0]["prob"])
 
     def get_votes(self, content_item: Dict[str, Any]) -> Dict[str, float]:
         """Return dictionary with weighted votes per language.
@@ -516,6 +539,10 @@ class ImpressoLanguageIdentifierEnsemble:
                         lid,
                     )
 
+        orig_lg_vote = self.get_orig_lg_vote(content_item)
+        if orig_lg_vote:
+            votes[orig_lg_vote[0]].append(("orig_lg", orig_lg_vote[1]))
+
         # Aggregate the vote scores for each language
         decision: Dict[str, float] = {}
         for lang in votes:
@@ -588,7 +615,12 @@ class ImpressoLanguageIdentifierEnsemble:
             ),
         }
 
-        if content_item["tp"] == "img":
+        # Images without a caption have no text to decide on
+        if content_item["tp"] == "img" or (
+            self.image_captions
+            and content_item["tp"] == "image"
+            and not content_item.get("len")
+        ):
             return content_item
 
         trust_orig_lg = False
@@ -653,6 +685,17 @@ class ImpressoLanguageIdentifierEnsemble:
             content_item["id"],
             all_lid_languages,
         )
+
+        # Captions are often too short for the LID systems, so the original
+        # language can decide alone if it is reliable enough
+        if not all_lid_languages:
+            orig_lg_vote = self.get_orig_lg_vote(content_item)
+            if orig_lg_vote and orig_lg_vote[1] >= self.minimal_voting_score:
+                lang, score = orig_lg_vote
+                content_item["votes"] = [{"lang": lang, "vote": round(score, 3)}]
+                content_item["lg"] = lang
+                content_item["lg_decision"] = "voting"
+                return content_item
 
         # If no LID predictions at all, use dominant language
         if not all_lid_languages:
@@ -1079,6 +1122,16 @@ def main() -> None:
         ),
     )
 
+    parser.add_argument(
+        "--image-captions",
+        action="store_true",
+        help=(
+            "Treat image content items as captions (requires Stage 1 run with"
+            " --image-captions). Off by default to keep the behavior of older"
+            " configurations."
+        ),
+    )
+
     arguments = parser.parse_args()
 
     setup_logging(arguments.log_level, arguments.log_file, logger=log)
@@ -1103,6 +1156,7 @@ def main() -> None:
             alphabetical_ratio_threshold=arguments.alphabetical_ratio_threshold,
             dominant_language_threshold=arguments.dominant_language_threshold,
             exclude_lb=set(arguments.exclude_lb),
+            image_captions=arguments.image_captions,
         )
         ensemble.run()
     except Exception as e:

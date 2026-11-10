@@ -266,6 +266,7 @@ class ImpressoLanguageIdentifierSystems(object):
         ocrqa_version: str = "main",
         local_files_only: bool = False,
         canonical_input_kind: str = "pages",
+        image_captions: bool = False,
     ):
 
         self.infile: str = infile
@@ -281,6 +282,7 @@ class ImpressoLanguageIdentifierSystems(object):
         self.ocrqa_version: str = ocrqa_version
         self.local_files_only: bool = local_files_only
         self.canonical_input_kind: str = canonical_input_kind
+        self.image_captions: bool = image_captions
 
         # Validate that issue_file is provided for canonical format
         if self.format == "canonical" and not self.issue_file:
@@ -1450,6 +1452,9 @@ class ImpressoLanguageIdentifierSystems(object):
                 log.error("Error processing canonical file %s: %s", input_file, e)
                 continue
 
+        if self.image_captions:
+            self._add_image_captions(content_items, content_item_metadata)
+
         # Clean up text for all content items
         for content_item in content_items.values():
             content_item["ft"] = " ".join(content_item["ft"].split())
@@ -1463,6 +1468,31 @@ class ImpressoLanguageIdentifierSystems(object):
         )
 
         return content_items
+
+    @staticmethod
+    def _add_image_captions(
+        content_items: Dict[str, dict], content_item_metadata: Dict[str, dict]
+    ) -> None:
+        """Use the caption (``m.t``) as the text of image content items.
+
+        The language of an image item is the language of its caption. Images
+        without a caption are not added.
+
+        :param Dict[str, dict] content_items: Content items, updated in place
+        :param Dict[str, dict] content_item_metadata: Metadata from the issue file
+        """
+        for content_item_id, metadata in content_item_metadata.items():
+            if metadata["tp"] != "image":
+                continue
+            caption = metadata["title"]
+            if not isinstance(caption, str) or not caption.strip():
+                continue
+            content_items[content_item_id] = {
+                "id": content_item_id,
+                "ft": caption,
+                "tp": metadata["tp"],
+                "lg": metadata["orig_lg"],
+            }
 
     def next_contentitem(self) -> Iterable[dict]:
         """Yield each content item from the input file."""
@@ -1682,6 +1712,16 @@ def main():
         ),
     )
 
+    parser.add_argument(
+        "--image-captions",
+        action="store_true",
+        help=(
+            "Identify the language of image captions (m.t in the issue file) and"
+            " output captioned images as content items. Off by default to keep the"
+            " behavior of older configurations."
+        ),
+    )
+
     arguments = parser.parse_args()
 
     # Validate format-specific requirements
@@ -1692,27 +1732,32 @@ def main():
 
     log.info("%s", arguments)
 
-    # Directly call LanguageIdentifier with relevant arguments
-    processor = ImpressoLanguageIdentifierSystems(
-        infile=arguments.infile,
-        outfile=arguments.outfile,
-        impresso_ft=arguments.impresso_ft,
-        wp_ft=arguments.wp_ft,
-        minimal_text_length=arguments.minimal_text_length,
-        lids=arguments.lids,
-        round_ndigits=arguments.round_ndigits,
-        git_describe=arguments.git_describe,
-        alphabetical_ratio_threshold=arguments.alphabetical_ratio_threshold,
-        format=arguments.format,
-        debug=arguments.debug,
-        issue_file=arguments.issue_file,
-        ocrqa=arguments.ocrqa,
-        ocrqa_repo=arguments.ocrqa_repo,
-        ocrqa_version=arguments.ocrqa_version,
-        local_files_only=arguments.local_files_only,
-        canonical_input_kind=arguments.canonical_input_kind,
-    )
-    processor.run()
+    try:
+        # Directly call LanguageIdentifier with relevant arguments
+        processor = ImpressoLanguageIdentifierSystems(
+            infile=arguments.infile,
+            outfile=arguments.outfile,
+            impresso_ft=arguments.impresso_ft,
+            wp_ft=arguments.wp_ft,
+            minimal_text_length=arguments.minimal_text_length,
+            lids=arguments.lids,
+            round_ndigits=arguments.round_ndigits,
+            git_describe=arguments.git_describe,
+            alphabetical_ratio_threshold=arguments.alphabetical_ratio_threshold,
+            format=arguments.format,
+            debug=arguments.debug,
+            issue_file=arguments.issue_file,
+            ocrqa=arguments.ocrqa,
+            ocrqa_repo=arguments.ocrqa_repo,
+            ocrqa_version=arguments.ocrqa_version,
+            local_files_only=arguments.local_files_only,
+            canonical_input_kind=arguments.canonical_input_kind,
+            image_captions=arguments.image_captions,
+        )
+        processor.run()
+    except Exception as e:
+        log.error("Language identification systems failed: %s", e, exc_info=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
